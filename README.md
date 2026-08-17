@@ -1,60 +1,50 @@
 # Neurofeed
 
-Neurofeed is a personalized scientific-literature discovery service built around a researcher's existing Bluesky scientific network. The canonical MVP output is a finite weekly email newsletter; the web application is the stateful feedback and control layer.
+Neurofeed is a personalized scientific-literature discovery service built around a researcher's existing Bluesky scientific network. The primary MVP output is a finite weekly email newsletter; the web application is the stateful feedback and control layer.
 
-This repository contains the Python ingestion and ranking backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
+This repository contains the Python ingestion, feedback-learning, and ranking backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
 
-## Implemented architecture
+## Implemented through Phase 5
 
 ### Phase 1 — database foundation
+Supabase/PostgreSQL owns canonical literature, user state, shared Bluesky state, digest/feedback entities, pgvector, Auth integration points and RLS boundaries.
 
-Supabase/PostgreSQL owns canonical literature, user/preferences, shared Bluesky state, digest/feedback entities, researcher identity, pgvector, Auth integration points and RLS boundaries.
+### Phase 2 — global literature
+OpenAlex Neuroscience/Psychology + bioRxiv are acquired globally once, enriched through Crossref/Europe PMC, and canonicalized across DOI/OpenAlex/PMID/preprint-publication aliases.
 
-### Phase 2 — global literature layer
+### Phase 3 — shared Bluesky
+Handles resolve to stable DIDs. Complete public follow graphs are mirrored atomically, stale actively-followed DIDs are fetched once globally, scholarly links remain durable until resolved, and only resolved links become paper social signals.
 
-OpenAlex Neuroscience/Psychology + bioRxiv are acquired globally once, enriched through Crossref/Europe PMC and deterministically canonicalized. DOI/OpenAlex/PMID aliases and later preprint→publication mappings resolve to one paper object.
+### Phase 4 — user model + ranking
+`text-embedding-3-small` 1,536-dimensional paper/profile embeddings feed pgvector HNSW cosine retrieval. Candidate ranking remains decomposed and configurable: semantic 35%, Bluesky 30%, method/species fit 10%, priority prior 10%, broad importance 5%, novelty 5%, recency 5%. Controlled serendipity uses the user's `discovery_balance` rather than low-score leftovers.
 
-### Phase 3 — shared Bluesky layer
-
-User handles resolve to stable DIDs. Complete public follow graphs are mirrored atomically, stale actively-followed DIDs are fetched once globally, scholarly links are retained durably, and only resolved links become canonical `paper_social_signals`.
-
-### Phase 4 — user model and ranking v1
-
-Paper and declared-profile embeddings use `text-embedding-3-small` at 1,536 dimensions. Paper embeddings are indexed with pgvector HNSW cosine search and invalidated automatically when title/abstract/venue text changes.
-
-The candidate union is:
+### Phase 5 — feedback learning
+Feedback is append-only and interpretable:
 
 ```text
-semantic nearest neighbours
-       ∪
-Bluesky network papers
-       ∪
-broader-discovery papers
-       ↓
-seen-paper suppression
-       ↓
-decomposed ranking
-       ↓
-focused + broad lanes
+IMPRESSION / CLICK / SAVE / UNSAVE / MORE / LESS
+                       ↓
+           effective paper feedback
+                       ↓
+      positive + negative embedding centroids
+                       +
+          learned signed feature weights
+                       ↓
+              future Phase 4 ranking
 ```
 
-Initial ranking weights remain configuration and match the MVP hypotheses:
+Current Save state is derived from the event stream through a security-invoker view. The authenticated event RPC derives user identity from `auth.uid()`; callers do not supply a trusted user ID.
 
-```text
-semantic relevance       35%
-Bluesky network signal   30%
-method/species fit       10%
-priority/quality prior   10%
-broad importance          5%
-novelty                   5%
-recency                   5%
-```
+Initial feedback weights are configuration, not product truth:
 
-The `quality_score` is deliberately an interpretable v1 priority prior (venue + small citation signal), not a claim of objective scientific quality.
+- click: weak positive (`0.25`)
+- current saved state: strong positive (`1.0`)
+- More like this: strongest positive (`1.5`)
+- Less like this: strong negative (`-1.5`)
 
-Declared research interests remain the anchor. Learned positive/negative embeddings are already supported by the ranker, but their contribution grows only with feedback maturity and will be populated in Phase 5.
+Repeated clicks do not stack, SAVE/UNSAVE is reduced to current state, and the latest explicit More/Less action wins. `already_knew_it` is neutral for preference learning: it still records the user action but does not teach the system that the paper's topic/method/species is unwanted.
 
-Controlled serendipity uses `profiles.discovery_balance` (default 0.25) to reserve an explicit broad-discovery share rather than filling it with low-ranked leftovers.
+Learned positive/negative semantic centroids are rebuilt from canonical paper embeddings and normalized. Learned method/species features are signed and saturating, while the declared profile remains the anchor; Phase 4 only increases the learned semantic contribution gradually as `feedback_count` grows.
 
 ## Jobs
 
@@ -65,6 +55,7 @@ neurofeed-sync-bluesky-accounts
 neurofeed-resolve-social-papers
 neurofeed-embed-new-papers
 neurofeed-refresh-user-models
+neurofeed-refresh-feedback-models
 neurofeed-rank-user --user-id <uuid>
 ```
 
@@ -72,22 +63,12 @@ neurofeed-rank-user --user-id <uuid>
 
 - `collect.yml` — weekly global literature ingestion.
 - `bluesky.yml` — daily shared Bluesky synchronization and social-paper resolution.
-- `models.yml` — daily incremental paper embeddings and declared user-model refresh.
+- `models.yml` — daily paper embeddings, declared user model refresh, then learned-feedback model rebuild.
 
-## Server environment
+## Server secrets
 
-Required secrets:
-
-- `SUPABASE_SECRET_KEY`
-- `OPENALEX_API_KEY`
-- `OPENAI_API_KEY`
-
-Optional repository variable:
-
-- `CROSSREF_MAILTO`
-
-`SUPABASE_SECRET_KEY` and `OPENAI_API_KEY` are backend-only and must never be exposed to a browser/client.
+Required: `SUPABASE_SECRET_KEY`, `OPENALEX_API_KEY`, `OPENAI_API_KEY`. Optional repository variable: `CROSSREF_MAILTO`.
 
 ## Next phase
 
-Phase 5 adds feedback endpoints/state transitions and computes learned positive/negative preference representations from click/save/more/less behavior. Phase 6 then freezes ranked results into reproducible digest snapshots and sends the newsletter.
+Phase 6 freezes ranked papers and score provenance into reproducible weekly digest snapshots, generates concise scientific summaries/explanations, creates safe interaction links, and sends the newsletter.

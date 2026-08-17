@@ -32,3 +32,5 @@ jobs:
         run: neurofeed-embed-new-papers --batch-size 64 --max-papers 5000
       - name: Refresh declared user models
         run: neurofeed-refresh-user-models
+      - name: Rebuild learned feedback models
+        run: neurofeed-refresh-feedback-models

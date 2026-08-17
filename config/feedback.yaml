@@ -1,0 +1,12 @@
+weights:
+  click: 0.25
+  save: 1.0
+  more_like_this: 1.5
+  less_like_this: 1.5
+
+neutral_less_reasons:
+  - already_knew_it
+
+learned_features:
+  min_absolute_signal: 1.0
+  saturation_signal: 3.0
