@@ -1,63 +1,41 @@
-# Neurofeed MVP architecture map
-
-## State flow through Phase 5
+# Neurofeed MVP architecture through Phase 6
 
 ```text
-GLOBAL LITERATURE + SHARED BLUESKY
-                ↓
-         canonical papers
-                ↓
-     embeddings + user profile
-                ↓
-       decomposed ranking
-                ↓
-      future digest snapshot
-                ↓
-        user interactions
-                ↓
- append-only user_paper_events
-                ↓
- effective feedback reduction
-        ┌───────┴────────┐
-        ▼                ▼
-positive/negative     signed learned
-semantic centroids    method/species features
-        └───────┬────────┘
-                ▼
-          future ranking
+literature APIs ───────┐
+                       ├─> canonical papers ─> embeddings ─┐
+public Bluesky network ┘                                   │
+                                                           ├─> transparent ranking
+user declared profile ─────────────> user model ───────────┤
+feedback events ──> learned positive/negative model ───────┘
+                                                           │
+                                                           ▼
+                                                  immutable digest snapshot
+                                                           │
+                                      ┌────────────────────┼──────────────────┐
+                                      ▼                    ▼                  ▼
+                                  HTML/text           interaction tokens    email send
+                                      │                    │                  │
+                                      └───────────── Phase 7 routes ──────────┘
 ```
 
-## Feedback semantics
+## Digest reproducibility
 
-The raw event stream is never rewritten. `get_effective_paper_feedback` deterministically reduces each user-paper history:
+`digests` stores subject, rendered HTML/text, content hash, delivery state and provider ID. `digest_items` stores exactly one paper per digest with rank, section, all decomposed score components, summary, deterministic why-explanation, paper URL, summary model/input hash, and provenance snapshot.
 
-- CLICK contributes once as a weak positive;
-- only the latest SAVE/UNSAVE state contributes;
-- only the latest MORE_LIKE_THIS/LESS_LIKE_THIS action contributes;
-- a Less reason configured as neutral (initially `already_knew_it`) does not generate negative preference learning;
-- IMPRESSION has no preference weight but still supports exposure history and evaluation.
+A unique `(user_id, period_start, period_end, version)` key prevents silent regeneration. Delivery uses the digest ID as the provider idempotency key.
 
-This makes the learned representation reproducible from events and prevents accidental multiplication of repeated clicks/saves.
+## Interaction security
 
-## Learned user model
+`interaction_tokens` stores only SHA-256 hashes of cryptographically random URL tokens. The table and lookup/consume RPCs are service-only. Action-token inspection is non-consuming; redemption requires the caller to provide the expected action. This supports a safe GET confirmation page followed by an explicit POST for state-changing Save/More/Less actions.
 
-Positive and negative effective papers produce separate weighted normalized embedding centroids. The job also extracts configured interpretable features from those papers and aggregates signed feature weights. Rebuilding with no effective feedback explicitly clears stale learned vectors/features.
+CLICK tokens are deliberately non-single-use because article redirects may be revisited. The feedback reducer counts CLICK only once per paper, so repeated visits do not multiply learning weight.
 
-The declared profile is never overwritten. Phase 4's feedback maturity ramp controls how much the learned positive centroid affects semantic similarity and how strongly the negative centroid suppresses candidates.
+## Summary boundary
 
-## Save state
+The LLM receives only canonical title/authors/venue/date/abstract data already present in Neurofeed and returns a strict structured `{paper_id, summary}` result. Missing abstracts use a deterministic fallback rather than inviting unsupported summarization. Bibliographic existence and identity remain exclusively structured-data concerns.
 
-`user_saved_papers` is a `security_invoker` view over the append-only event table. RLS on `user_paper_events` therefore remains the ownership boundary.
+## Remaining MVP phases
 
-## Implemented job boundaries
-
-1. global literature sync;
-2. user follow graph sync;
-3. shared unique-DID Bluesky sync;
-4. social-paper resolution;
-5. paper embedding refresh;
-6. declared user model refresh;
-7. learned feedback model refresh;
-8. transparent rank preview.
-
-Phase 6 adds digest generation and delivery without changing these ingestion/learning boundaries.
+- Phase 7: lightweight Next.js web application and interaction endpoints.
+- Phase 8: researcher identity resolution + Scientists Worth Knowing.
+- Phase 9: lab pilot/instrumentation and tuning.
