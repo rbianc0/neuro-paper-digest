@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuro-paper-digest"
-version = "0.5.0"
-description = "Neurofeed shared ingestion, feedback learning, and transparent ranking services"
+version = "0.6.0"
+description = "Neurofeed shared ingestion, feedback learning, ranking, and newsletter delivery services"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.32,<3",
@@ -27,6 +27,8 @@ neurofeed-embed-new-papers = "neuro_digest.jobs.embed_new_papers:main"
 neurofeed-refresh-user-models = "neuro_digest.jobs.refresh_user_models:main"
 neurofeed-refresh-feedback-models = "neuro_digest.jobs.refresh_feedback_models:main"
 neurofeed-rank-user = "neuro_digest.jobs.rank_user:main"
+neurofeed-generate-weekly-digests = "neuro_digest.jobs.generate_weekly_digests:main"
+neurofeed-send-weekly-digests = "neuro_digest.jobs.send_weekly_digests:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,50 +1,49 @@
 # Neurofeed
 
-Neurofeed is a personalized scientific-literature discovery service built around a researcher's existing Bluesky scientific network. The primary MVP output is a finite weekly email newsletter; the web application is the stateful feedback and control layer.
+Neurofeed is a personalized scientific-literature discovery service built around a researcher's existing Bluesky scientific network. The primary MVP output is a finite weekly email newsletter; the web application is the stateful feedback/control layer.
 
-This repository contains the Python ingestion, feedback-learning, and ranking backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
+This repository contains the Python ingestion, feedback-learning, ranking, digest-generation, and email-delivery backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
 
-## Implemented through Phase 5
+## Implemented through Phase 6
 
-### Phase 1 — database foundation
-Supabase/PostgreSQL owns canonical literature, user state, shared Bluesky state, digest/feedback entities, pgvector, Auth integration points and RLS boundaries.
+1. **Database foundation** — Supabase/PostgreSQL, Auth-linked profiles, pgvector, RLS and canonical product state.
+2. **Global literature** — shared OpenAlex/bioRxiv acquisition, Crossref/Europe PMC enrichment, deterministic canonicalization and cross-week identifier merging.
+3. **Shared Bluesky** — public follow synchronization, stable DIDs, unique-account feed ingestion, durable scholarly links and canonical social signals.
+4. **User model + ranking** — 1,536-dimensional semantic retrieval, decomposed semantic+Bluesky scoring and controlled broader discovery.
+5. **Feedback learning** — append-only events, current Save state, positive/negative semantic centroids and signed learned method/species features.
+6. **Newsletter** — immutable weekly digest snapshots, structured summaries, deterministic recommendation explanations, per-user interaction tokens and idempotent email delivery.
 
-### Phase 2 — global literature
-OpenAlex Neuroscience/Psychology + bioRxiv are acquired globally once, enriched through Crossref/Europe PMC, and canonicalized across DOI/OpenAlex/PMID/preprint-publication aliases.
+## Phase 6 digest contract
 
-### Phase 3 — shared Bluesky
-Handles resolve to stable DIDs. Complete public follow graphs are mirrored atomically, stale actively-followed DIDs are fetched once globally, scholarly links remain durable until resolved, and only resolved links become paper social signals.
-
-### Phase 4 — user model + ranking
-`text-embedding-3-small` 1,536-dimensional paper/profile embeddings feed pgvector HNSW cosine retrieval. Candidate ranking remains decomposed and configurable: semantic 35%, Bluesky 30%, method/species fit 10%, priority prior 10%, broad importance 5%, novelty 5%, recency 5%. Controlled serendipity uses the user's `discovery_balance` rather than low-score leftovers.
-
-### Phase 5 — feedback learning
-Feedback is append-only and interpretable:
+A digest is frozen before delivery:
 
 ```text
-IMPRESSION / CLICK / SAVE / UNSAVE / MORE / LESS
-                       ↓
-           effective paper feedback
-                       ↓
-      positive + negative embedding centroids
-                       +
-          learned signed feature weights
-                       ↓
-              future Phase 4 ranking
+ranked unique papers
+      ↓
+one presentation section each
+      ↓
+canonical paper metadata + authors
+      ↓
+summary from supplied metadata/abstract only
+      ↓
+score/provenance snapshot
+      ↓
+per-user random interaction URLs
+      ↓
+rendered HTML/text + content hash
+      ↓
+GENERATED
+      ↓
+idempotent email send
+      ↓
+SENT
 ```
 
-Current Save state is derived from the event stream through a security-invoker view. The authenticated event RPC derives user identity from `auth.uid()`; callers do not supply a trusted user ID.
+The summarizer never decides whether a paper exists and receives no web-search capability. `why_recommended` is deterministic from the stored ranking components/provenance.
 
-Initial feedback weights are configuration, not product truth:
+Raw interaction tokens are never stored as dedicated token rows: only SHA-256 hashes are stored in `interaction_tokens`; the raw values appear in the exact newsletter HTML/text delivered to that user. Read-paper tokens create weak CLICK events and redirect. Save/More/Less tokens are single-use and must be explicitly POST-confirmed by the Phase 7 web route; opening the email link alone does not change preference state.
 
-- click: weak positive (`0.25`)
-- current saved state: strong positive (`1.0`)
-- More like this: strongest positive (`1.5`)
-- Less like this: strong negative (`-1.5`)
-
-Repeated clicks do not stack, SAVE/UNSAVE is reduced to current state, and the latest explicit More/Less action wins. `already_knew_it` is neutral for preference learning: it still records the user action but does not teach the system that the paper's topic/method/species is unwanted.
-
-Learned positive/negative semantic centroids are rebuilt from canonical paper embeddings and normalized. Learned method/species features are signed and saturating, while the declared profile remains the anchor; Phase 4 only increases the learned semantic contribution gradually as `feedback_count` grows.
+The same `(user, period, version)` digest is not silently regenerated. A new editorial/ranking version must use a new digest version, preserving reproducibility.
 
 ## Jobs
 
@@ -57,18 +56,23 @@ neurofeed-embed-new-papers
 neurofeed-refresh-user-models
 neurofeed-refresh-feedback-models
 neurofeed-rank-user --user-id <uuid>
+neurofeed-generate-weekly-digests
+neurofeed-send-weekly-digests
 ```
 
 ## Scheduled workflows
 
-- `collect.yml` — weekly global literature ingestion.
-- `bluesky.yml` — daily shared Bluesky synchronization and social-paper resolution.
-- `models.yml` — daily paper embeddings, declared user model refresh, then learned-feedback model rebuild.
+- `collect.yml` — Monday global literature ingestion.
+- `bluesky.yml` — daily shared Bluesky synchronization/resolution.
+- `models.yml` — daily paper embeddings + declared/learned user model refresh.
+- `newsletter.yml` — Monday digest freeze followed by email delivery.
 
-## Server secrets
+## Required server configuration
 
-Required: `SUPABASE_SECRET_KEY`, `OPENALEX_API_KEY`, `OPENAI_API_KEY`. Optional repository variable: `CROSSREF_MAILTO`.
+Secrets: `SUPABASE_SECRET_KEY`, `OPENALEX_API_KEY`, `OPENAI_API_KEY`, `RESEND_API_KEY`.
+
+Repository/environment variables: `CROSSREF_MAILTO` (optional), `NEUROFEED_FROM_EMAIL`, `NEUROFEED_BASE_URL`.
 
 ## Next phase
 
-Phase 6 freezes ranked papers and score provenance into reproducible weekly digest snapshots, generates concise scientific summaries/explanations, creates safe interaction links, and sends the newsletter.
+Phase 7 is the lightweight Next.js application: magic-link authentication, onboarding, latest/history/saved/settings, recommendation explanations, `/r/<token>` read redirects, and `/a/<token>` confirmation+POST feedback actions.

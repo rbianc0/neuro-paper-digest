@@ -1,0 +1,37 @@
+name: Generate and send Neurofeed weekly newsletter
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neurofeed-weekly-newsletter
+  cancel-in-progress: false
+
+jobs:
+  newsletter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL: https://yajsdhpaobqtduazpkkd.supabase.co
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      NEUROFEED_SUMMARY_MODEL: gpt-5-mini
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      NEUROFEED_FROM_EMAIL: ${{ vars.NEUROFEED_FROM_EMAIL }}
+      NEUROFEED_BASE_URL: ${{ vars.NEUROFEED_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+      - name: Freeze weekly digest snapshots
+        run: neurofeed-generate-weekly-digests
+      - name: Deliver generated digests
+        run: neurofeed-send-weekly-digests

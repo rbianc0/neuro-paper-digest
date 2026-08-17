@@ -1,0 +1,10 @@
+digest_size: 16
+must_read_count: 4
+version: v1
+summary:
+  model: gpt-5-mini
+  batch_size: 8
+interaction_tokens:
+  click_expiry_days: 365
+  action_expiry_days: 90
+subject_prefix: Neurofeed Weekly
