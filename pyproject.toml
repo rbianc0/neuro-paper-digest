@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuro-paper-digest"
-version = "0.4.0"
-description = "Neurofeed shared ingestion, user models, and transparent ranking services"
+version = "0.5.0"
+description = "Neurofeed shared ingestion, feedback learning, and transparent ranking services"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.32,<3",
@@ -25,6 +25,7 @@ neurofeed-sync-bluesky-accounts = "neuro_digest.jobs.sync_bluesky_accounts:main"
 neurofeed-resolve-social-papers = "neuro_digest.jobs.resolve_social_papers:main"
 neurofeed-embed-new-papers = "neuro_digest.jobs.embed_new_papers:main"
 neurofeed-refresh-user-models = "neuro_digest.jobs.refresh_user_models:main"
+neurofeed-refresh-feedback-models = "neuro_digest.jobs.refresh_feedback_models:main"
 neurofeed-rank-user = "neuro_digest.jobs.rank_user:main"
 
 [tool.setuptools.packages.find]
