@@ -1,0 +1,29 @@
+candidate_lookback_days: 14
+semantic_top_k: 400
+learned_top_k: 200
+broad_top_k: 200
+feedback_maturity_count: 10
+negative_similarity_penalty: 0.15
+novelty_half_life_days: 21
+recency_half_life_days: 14
+
+weights:
+  semantic: 0.35
+  bluesky: 0.30
+  fit: 0.10
+  quality: 0.10
+  broad: 0.05
+  novelty: 0.05
+  recency: 0.05
+
+priority_venues:
+  - Nature
+  - Science
+  - Cell
+  - Nature Neuroscience
+  - Neuron
+  - Nature Human Behaviour
+  - Current Biology
+  - Proceedings of the National Academy of Sciences
+  - Science Advances
+  - Nature Communications
