@@ -1,8 +1,6 @@
 # Neurofeed MVP architecture map
 
-The original `neuro-paper-digest` repository was a single-user acquisition prototype. The implementation now separates global/shared acquisition from user-specific ranking state.
-
-## Service boundaries
+## Current boundaries through Phase 4
 
 ```text
 GLOBAL LITERATURE                 SHARED BLUESKY
@@ -16,61 +14,64 @@ Crossref / Europe PMC             unique DID feed cache
                        ▼
                  Supabase state
                        │
-             ┌─────────┴─────────┐
-             ▼                   ▼
-       user ranking          feedback/digests
-       (Phase 4+)            (Phase 5+)
+             embeddings + features
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+      semantic      network      broad
+      candidates    candidates   candidates
+          └────────────┼────────────┘
+                       ▼
+               decomposed ranking
+                       │
+             focused / broad lanes
+                       ▼
+              digest layer (next)
 ```
 
-## Phase 1 — foundation
+## Candidate retrieval
 
-The canonical database owns users/preferences, literature, shared Bluesky data, researcher identity, digest snapshots and feedback events. RLS separates user-readable state from server-owned ingestion state.
+`match_papers` performs service-only HNSW cosine nearest-neighbour retrieval over recent canonical papers. `get_user_network_candidates` derives social features from active user follows and high-confidence followed-author mappings. `get_broad_candidates` returns deliberately important broader candidates using configured priority venues and early citation signal.
 
-## Phase 2 — literature
+Previously seen papers are hard-suppressed through `get_user_seen_papers` before final scoring.
 
-Implemented:
+## Embedding lifecycle
 
-- global recent OpenAlex Neuroscience/Psychology acquisition;
-- bioRxiv Neuroscience preprints + publication mappings;
-- Crossref and Europe PMC enrichment;
-- structured authors and provenance;
-- persistent DOI/OpenAlex/PMID aliases;
-- historical paper merging when later provenance proves two rows equivalent;
-- DB-first idempotent persistence.
+- model: `text-embedding-3-small`;
+- dimensionality: 1536;
+- paper input: title + abstract + venue;
+- declared profile input: free-text research description;
+- SHA-256 input hashes prevent unnecessary regeneration;
+- paper text changes invalidate the stored embedding automatically;
+- HNSW cosine index lives on non-null paper embeddings only.
 
-The prototype per-user acquisition config and monolithic pipeline were removed.
+## User representation
 
-## Phase 3 — Bluesky
+The MVP separates declared and learned state:
 
-### Follow synchronization
+- `declared_embedding` — explicit research description;
+- `learned_positive_embedding` — Phase 5 behavioral positive centroid;
+- `learned_negative_embedding` — Phase 5 negative centroid;
+- `user_preference_features` — interpretable METHOD/SPECIES/etc. weights.
 
-A user profile stores a human-readable handle but synchronization resolves it to a stable DID. The complete public follow list is fetched before `replace_user_bluesky_follows` atomically marks removed follows inactive and current follows active. No partial API result mutates the graph.
+A deterministic taxonomy extracts initial inferred method/species features without using an LLM. Manually declared and learned features are not deleted when inferred features refresh.
 
-### Unique-account scheduling
+## Ranking v1
 
-`get_stale_bluesky_accounts` returns distinct account rows only when at least one active user follows that DID. Therefore User A, B and C following researcher X still produce one feed fetch for X. Unfollowed accounts can remain cached but are no longer scheduled.
+Every ranked paper preserves components:
 
-### Social event model
+- semantic;
+- Bluesky;
+- method/species fit;
+- priority/quality prior;
+- broad-discovery importance;
+- novelty;
+- recency;
+- provenance including followed-actor counts and followed-author state.
 
-An AppView author-feed item is decomposed into:
+The Bluesky score saturates independent network sources, weights quotes/direct posts more than reposts, decays old discussion, and combines discussion with the followed-author signal without allowing raw volume to grow linearly without bound.
 
-1. the underlying `bluesky_posts` object;
-2. a `bluesky_post_events` actor action (`POST`, `REPOST`, `QUOTE`) with the action timestamp;
-3. zero or more normalized `bluesky_scholarly_links`.
-
-A recent repost of an old post uses the repost timestamp as the network-attention time while preserving the original post object/author. Quote posts remain intrinsic quote objects. Only posts exposing supported scholarly evidence are persisted in the MVP.
-
-### Durable resolution
-
-`bluesky_scholarly_links` is deliberately separate from `paper_social_signals`. Resolution order is:
-
-1. canonical DOI/PMID already present in `paper_identifiers`;
-2. DOI/PMID discovered from publisher-page metadata;
-3. exact normalized-title match when metadata provides a title;
-4. structured OpenAlex/Crossref/Europe PMC retrieval and canonical paper persistence;
-5. otherwise retain the link as unresolved for retry.
-
-After resolution, each actor event attached to that post becomes an idempotent `paper_social_signals` row.
+The final broad lane is selected separately according to the user's discovery balance, so serendipity is intentional rather than a low-score fallback.
 
 ## Job boundaries
 
@@ -78,9 +79,10 @@ After resolution, each actor event attached to that post becomes an idempotent `
 2. `sync_user_follow_graphs` — implemented.
 3. `sync_bluesky_accounts` — implemented.
 4. `resolve_social_papers` — implemented.
-5. `resolve_researcher_identities` — later/minimal support as needed.
-6. `embed_new_papers` — Phase 4.
-7. `generate_weekly_digests` — Phase 6.
-8. `send_weekly_digests` — Phase 6.
+5. `embed_new_papers` — implemented.
+6. `refresh_user_models` — implemented.
+7. feedback learning — Phase 5.
+8. `generate_weekly_digests` — Phase 6.
+9. `send_weekly_digests` — Phase 6.
 
-GitHub Actions remains sufficient for the lab MVP. No streaming/firehose infrastructure is introduced before pilot evidence demands it.
+The ranking code remains deterministic/interpretable except for the embedding representation. No trained recommender model is introduced before pilot evidence warrants it.

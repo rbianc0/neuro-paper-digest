@@ -2,124 +2,92 @@
 
 Neurofeed is a personalized scientific-literature discovery service built around a researcher's existing Bluesky scientific network. The canonical MVP output is a finite weekly email newsletter; the web application is the stateful feedback and control layer.
 
-This repository contains the Python ingestion backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
+This repository contains the Python ingestion and ranking backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
 
 ## Implemented architecture
 
 ### Phase 1 — database foundation
 
-Supabase/PostgreSQL contains the canonical MVP schema, pgvector, Supabase Auth integration points, RLS, shared literature state, shared Bluesky state, digest/feedback entities, and researcher-discovery entities.
+Supabase/PostgreSQL owns canonical literature, user/preferences, shared Bluesky state, digest/feedback entities, researcher identity, pgvector, Auth integration points and RLS boundaries.
 
 ### Phase 2 — global literature layer
 
-```text
-OpenAlex Neuroscience/Psychology + bioRxiv
-                  ↓
- deterministic canonicalization
-                  ↓
- Crossref / Europe PMC enrichment
-                  ↓
-               Supabase
-```
-
-Literature is acquired globally once. `paper_identifiers` and the service-only `merge_papers` operation preserve one scientific object across DOI/OpenAlex/PMID aliases and later preprint→publication mappings.
+OpenAlex Neuroscience/Psychology + bioRxiv are acquired globally once, enriched through Crossref/Europe PMC and deterministically canonicalized. DOI/OpenAlex/PMID aliases and later preprint→publication mappings resolve to one paper object.
 
 ### Phase 3 — shared Bluesky layer
 
+User handles resolve to stable DIDs. Complete public follow graphs are mirrored atomically, stale actively-followed DIDs are fetched once globally, scholarly links are retained durably, and only resolved links become canonical `paper_social_signals`.
+
+### Phase 4 — user model and ranking v1
+
+Paper and declared-profile embeddings use `text-embedding-3-small` at 1,536 dimensions. Paper embeddings are indexed with pgvector HNSW cosine search and invalidated automatically when title/abstract/venue text changes.
+
+The candidate union is:
+
 ```text
-Neurofeed profiles
-      ↓
-resolve handle → stable DID
-      ↓
-public Bluesky follow graph
-      ↓
-user_bluesky_follows
-      │
-      └──────────────┐
-                     ▼
-        unique active followed DIDs
-                     ↓
-        fetch each stale account once
-                     ↓
-      posts + actor attention events
-                     ↓
-        normalized scholarly links
-                     ↓
-       canonical paper resolution
-                     ↓
-          paper_social_signals
+semantic nearest neighbours
+       ∪
+Bluesky network papers
+       ∪
+broader-discovery papers
+       ↓
+seen-paper suppression
+       ↓
+decomposed ranking
+       ↓
+focused + broad lanes
 ```
 
-The same followed researcher is fetched once regardless of how many Neurofeed users follow them. Follow-graph replacement is atomic: the database is changed only after a complete successful public follow fetch. Failed account fetches use bounded exponential backoff.
+Initial ranking weights remain configuration and match the MVP hypotheses:
 
-Raw network attention is stored separately from resolved paper signals:
+```text
+semantic relevance       35%
+Bluesky network signal   30%
+method/species fit       10%
+priority/quality prior   10%
+broad importance          5%
+novelty                   5%
+recency                   5%
+```
 
-- `bluesky_posts`: underlying post objects;
-- `bluesky_post_events`: which followed DID posted/reposted/quoted a post and when;
-- `bluesky_scholarly_links`: DOI/PMID/scholarly URLs plus durable resolution state;
-- `paper_social_signals`: only links that have resolved to canonical papers.
+The `quality_score` is deliberately an interpretable v1 priority prior (venue + small citation signal), not a claim of objective scientific quality.
 
-This means an unresolved publisher URL is not discarded and can be retried later.
+Declared research interests remain the anchor. Learned positive/negative embeddings are already supported by the ranker, but their contribution grows only with feedback maturity and will be populated in Phase 5.
+
+Controlled serendipity uses `profiles.discovery_balance` (default 0.25) to reserve an explicit broad-discovery share rather than filling it with low-ranked leftovers.
 
 ## Jobs
 
-### Literature
-
 ```bash
-neurofeed-sync-literature --lookback-days 8
-```
-
-### Bluesky follow graphs
-
-```bash
+neurofeed-sync-literature
 neurofeed-sync-follow-graphs
+neurofeed-sync-bluesky-accounts
+neurofeed-resolve-social-papers
+neurofeed-embed-new-papers
+neurofeed-refresh-user-models
+neurofeed-rank-user --user-id <uuid>
 ```
 
-### Shared stale-account cache
+## Scheduled workflows
 
-```bash
-neurofeed-sync-bluesky-accounts \
-  --stale-hours 22 \
-  --lookback-days 8 \
-  --batch-size 1000 \
-  --max-workers 8
-```
+- `collect.yml` — weekly global literature ingestion.
+- `bluesky.yml` — daily shared Bluesky synchronization and social-paper resolution.
+- `models.yml` — daily incremental paper embeddings and declared user-model refresh.
 
-### Social paper resolution
+## Server environment
 
-```bash
-neurofeed-resolve-social-papers --limit 2000
-```
+Required secrets:
 
-The Bluesky jobs use public reads only. Neurofeed does not request Bluesky passwords and does not create follows; Bluesky remains the source of truth for the researcher graph.
-
-## Environment
-
-```bash
-export OPENALEX_API_KEY='...'
-export SUPABASE_URL='https://yajsdhpaobqtduazpkkd.supabase.co'
-export SUPABASE_SECRET_KEY='...'
-export CROSSREF_MAILTO='you@example.org'   # optional
-```
-
-`SUPABASE_SECRET_KEY` is server-only and must never be exposed to a browser/client.
-
-## GitHub Actions
-
-- `.github/workflows/collect.yml` — weekly global literature ingestion.
-- `.github/workflows/bluesky.yml` — daily follow synchronization, unique-account feed refresh, and social-paper resolution.
-
-Both workflows use the same canonical Supabase state. Generated JSON is diagnostic only; Git is not the database.
-
-Required repository secrets:
-
-- `OPENALEX_API_KEY`
 - `SUPABASE_SECRET_KEY`
+- `OPENALEX_API_KEY`
+- `OPENAI_API_KEY`
 
 Optional repository variable:
 
 - `CROSSREF_MAILTO`
 
+`SUPABASE_SECRET_KEY` and `OPENAI_API_KEY` are backend-only and must never be exposed to a browser/client.
+
 ## Next phase
 
-Phase 4 adds the user representation and transparent ranking model: declared research profile, embeddings, semantic candidates, Bluesky subscore, broader-discovery lane, and decomposed recommendation scores. No recommendation or newsletter logic belongs in the ingestion services above.
+Phase 5 adds feedback endpoints/state transitions and computes learned positive/negative preference representations from click/save/more/less behavior. Phase 6 then freezes ranked results into reproducible digest snapshots and sends the newsletter.
