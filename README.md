@@ -1,26 +1,63 @@
-# Neuro Paper Digest collector
+# Neurofeed
 
-Deterministic acquisition layer for a weekly neuroscience newsletter. It collects recent candidates from OpenAlex and bioRxiv, scans the public Bluesky follow graph of `rimbianco.bsky.social`, normalizes scholarly identifiers, merges preprint/publication versions, and writes a structured candidate pool for a separate ChatGPT Scheduled Task to rank and summarize.
+Neurofeed is a personalized scientific-literature discovery service built around the research network a scientist already maintains on Bluesky. The repository began as `neuro-paper-digest`, a deterministic weekly collector, and is being evolved into the lab-testable Neurofeed MVP.
 
-## Pipeline
+The canonical product behavior is: shared scholarly acquisition + shared Bluesky ingestion → canonical papers → personalized semantic/network ranking → weekly email newsletter → user feedback → improved ranking, with a reverse paper → scientist → Bluesky-follow discovery loop.
 
-1. OpenAlex: overlapping topic queries over the last 7 days.
-2. OpenAlex broad-discovery lane: neuro/psych queries restricted to a configurable high-selectivity journal list.
-3. bioRxiv: Neuroscience-category preprints plus bioRxiv→journal publication mappings.
-4. Bluesky: `app.bsky.graph.getFollows` followed by `app.bsky.feed.getAuthorFeed` for each public followed account; extract DOI/PubMed/bioRxiv/publisher links from post text, facets, embeds and reposts.
-5. Enrichment: DOI/PMID records are normalized through OpenAlex; unresolved scholarly URLs get a bounded metadata-page fallback.
-6. Deduplication: canonical DOI → preprint/published DOI relationship → OpenAlex/PMID → exact normalized title → high title similarity + author overlap.
-7. Outputs: weekly snapshot, `data/latest_candidates.json`, and a human-readable `docs/index.md`.
+## Current implementation status
 
-## Secrets
+**Phase 1 — database foundation: implemented on the `agent/neurofeed-phase1` branch.**
 
-Do **not** commit API keys. Add the following GitHub Actions repository secret:
+- Supabase/PostgreSQL schema for users, preferences, canonical literature, Bluesky cache, social signals, recommendations, feedback, digests, and scientist discovery.
+- pgvector enabled for future semantic representations.
+- Row Level Security enabled on every public table with client access scoped to the MVP access model.
+- Supabase Auth is the user identity source of truth.
+- Existing collector mapped onto the target DB-first/shared-ingestion architecture in [`docs/architecture.md`](docs/architecture.md).
 
-- `OPENALEX_API_KEY` — required for OpenAlex API access. OpenAlex provides a free daily allowance.
+The existing Python acquisition code remains intact while Phase 2 converts literature acquisition from JSON-first to DB-first.
 
-Bluesky public follow/feed reads and the bioRxiv API do not require keys.
+## Existing collector capabilities
 
-## Local run
+The prototype currently:
+
+1. queries OpenAlex using focused and broader-discovery queries;
+2. collects neuroscience preprints and publication mappings from bioRxiv;
+3. reads a public Bluesky follow graph and followed-account feeds;
+4. extracts DOI/PubMed/bioRxiv/publisher links from posts/reposts/quotes;
+5. enriches identifiers through OpenAlex and bounded metadata resolution;
+6. deterministically deduplicates DOI → preprint/publication relation → OpenAlex/PMID → exact title → high title similarity + author overlap;
+7. exports weekly JSON/Markdown candidate snapshots.
+
+Those collector components are inputs to the new architecture, not discarded work.
+
+## Target architecture
+
+See [`docs/architecture.md`](docs/architecture.md) for the concrete current-path → target-module map and job boundaries.
+
+The central architectural changes are:
+
+- PostgreSQL/Supabase becomes canonical state rather than generated JSON.
+- literature is acquired globally once rather than per user;
+- Bluesky account feeds are fetched once per unique DID across all Neurofeed users;
+- a user's Bluesky follows remain only a mirror of Bluesky, never an internal competing follow graph;
+- recommendation and feedback state are persisted with score provenance;
+- the weekly newsletter remains the primary product output.
+
+## Supabase
+
+The reproducible Phase 1 schema is in:
+
+```text
+supabase/migrations/20260817210900_phase1_database_foundation.sql
+```
+
+For local/CI/backend jobs, keep privileged Supabase credentials server-side only. Never expose a service-role/secret key to a browser client.
+
+Embedding columns are intentionally dimensionless in Phase 1. Once the embedding model is selected in Phase 4, lock the vector dimension and add the appropriate ANN index.
+
+## Prototype local run
+
+The pre-DB collector is still runnable during the migration:
 
 ```bash
 python -m venv .venv
@@ -31,24 +68,26 @@ neuro-digest --lookback-days 7
 pytest -q
 ```
 
-## GitHub Actions
+## Current secrets
 
-`.github/workflows/collect.yml` runs every Monday at 03:37 UTC and can also be triggered manually. It commits generated `data/` and `docs/` files back to the repository using the built-in `GITHUB_TOKEN`.
+Do not commit API keys.
 
-The scheduled ChatGPT task should run later (currently Monday morning Europe/Berlin), read `docs/latest_candidates.json` or `docs/index.md`, supplement it with its own web search, then perform semantic ranking and summaries.
+- `OPENALEX_API_KEY` — used by the existing OpenAlex collector.
+- Supabase server-side credentials will be introduced with the Phase 2 database repository layer.
 
-## Configuration
+Bluesky public reads and the bioRxiv API currently do not require user credentials.
 
-Edit `config/interests.yaml` to change:
+## Existing GitHub Actions
 
-- personalized OpenAlex discovery queries;
-- broad neuroscience/psychology discovery queries;
-- high-selectivity journal whitelist;
-- Bluesky handle and crawl limits;
-- bioRxiv category.
+`.github/workflows/collect.yml` still runs the legacy weekly all-in-one collector. It will be decomposed as the implementation proceeds into the logical jobs defined by the MVP specification:
 
-The query list is intentionally redundant. Deduplication happens after acquisition.
+- `sync_literature`
+- `sync_user_follow_graphs`
+- `sync_bluesky_accounts`
+- `resolve_social_papers`
+- `resolve_researcher_identities`
+- `embed_new_papers`
+- `generate_weekly_digests`
+- `send_weekly_digests`
 
-## Privacy / security
-
-The repository is designed to contain only public scholarly metadata and public Bluesky activity. API keys remain in GitHub Actions secrets and are never written to generated output.
+Generated `data/` and `docs/latest_candidates.json` outputs should be treated as compatibility/debug artifacts once Phase 2 makes literature ingestion DB-first.
