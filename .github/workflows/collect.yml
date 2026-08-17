@@ -1,57 +1,54 @@
-name: Collect weekly neuroscience papers
+name: Sync global Neurofeed literature
 
 on:
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: Days to scan
+        description: Days to ingest
         required: false
-        default: "7"
+        default: "8"
   schedule:
-    # 03:37 UTC Monday = 05:37 CEST / 04:37 CET, before the 08:00 Europe/Berlin ChatGPT digest.
     - cron: "37 3 * * 1"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: weekly-neuro-paper-collector
+  group: neurofeed-global-literature
   cancel-in-progress: false
 
 jobs:
-  collect:
+  sync-literature:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      - name: Install collector
+      - name: Install Neurofeed collector
         run: pip install .
 
-      - name: Collect and deduplicate candidates
+      - name: Ingest shared literature pool
         env:
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          SUPABASE_URL: https://yajsdhpaobqtduazpkkd.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          CROSSREF_MAILTO: ${{ vars.CROSSREF_MAILTO }}
         run: |
-          DAYS="${{ github.event.inputs.lookback_days || '7' }}"
-          neuro-digest --lookback-days "$DAYS"
+          DAYS="${{ github.event.inputs.lookback_days || '8' }}"
+          neurofeed-sync-literature \
+            --lookback-days "$DAYS" \
+            --diagnostic-output data/latest_literature_sync.json
 
-      - name: Commit updated dataset
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data docs
-          if git diff --cached --quiet; then
-            echo "No dataset changes to commit."
-            exit 0
-          fi
-          git commit -m "data: update weekly neuroscience candidates"
-          git push
+      - name: Upload diagnostic snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neurofeed-literature-sync
+          path: data/latest_literature_sync.json
+          if-no-files-found: ignore
+          retention-days: 7

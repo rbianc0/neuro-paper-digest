@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuro-paper-digest"
-version = "0.1.0"
-description = "Deterministic neuroscience paper collector for OpenAlex, bioRxiv, and Bluesky"
+version = "0.2.0"
+description = "Neurofeed global literature ingestion and canonicalization service"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.32,<3",
@@ -19,7 +19,7 @@ dependencies = [
 dev = ["pytest>=8,<9"]
 
 [project.scripts]
-neuro-digest = "neuro_digest.cli:main"
+neurofeed-sync-literature = "neuro_digest.jobs.sync_literature:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
