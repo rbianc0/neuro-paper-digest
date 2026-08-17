@@ -1,75 +1,86 @@
 # Neurofeed MVP architecture map
 
-The original `neuro-paper-digest` repository was a useful single-user acquisition prototype. Neurofeed keeps the deterministic scholarly parsing/deduplication ideas but replaces JSON-first state and per-user crawling with shared canonical services.
+The original `neuro-paper-digest` repository was a single-user acquisition prototype. The implementation now separates global/shared acquisition from user-specific ranking state.
 
-## Target service boundaries
+## Service boundaries
 
 ```text
-                         ┌────────────────────┐
-                         │ Supabase / Postgres│
-                         │ canonical state    │
-                         └─────────┬──────────┘
-                                   │
-          ┌────────────────────────┼─────────────────────────┐
-          │                        │                         │
-   global literature       shared Bluesky            user/digest state
-      ingestion               ingestion                + feedback
-          │                        │                         │
- OpenAlex/bioRxiv        unique DID scheduler       ranking/newsletter
- Crossref/Europe PMC     posts + social links      web control layer
+GLOBAL LITERATURE                 SHARED BLUESKY
+OpenAlex / bioRxiv                public follow graphs
+Crossref / Europe PMC             unique DID feed cache
+        │                                  │
+        ▼                                  ▼
+ canonical papers ◄──── social-link resolution
+        │                                  │
+        └──────────────┬───────────────────┘
+                       ▼
+                 Supabase state
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+       user ranking          feedback/digests
+       (Phase 4+)            (Phase 5+)
 ```
 
-## Phase 2 mapping
+## Phase 1 — foundation
 
-| Prototype | Neurofeed target | Status |
-|---|---|---|
-| `sources/openalex.py` keyword searches | shared recent Neuroscience/Psychology corpus + identifier lookup | implemented |
-| `sources/biorxiv.py` | global Neuroscience preprints + publication mappings | implemented |
-| no Crossref collector | DOI/publisher enrichment + provenance | implemented |
-| no Europe PMC collector | biomedical abstract/PMID/OA enrichment | implemented |
-| `Candidate.authors: list[str]` | structured `AuthorRef` with OpenAlex/ORCID/affiliations/position | implemented |
-| parallel `source_types/source_urls` lists | structured `SourceRecord` provenance | implemented |
-| `dedupe.py` weekly in-memory only | in-memory dedup + persistent identifier registry + historical merge | implemented |
-| `data/*.json` canonical state | PostgreSQL canonical state | implemented |
-| JSON history file | canonical DB identifiers/timestamps | implemented |
-| monolithic `pipeline.py` | explicit scheduled jobs | old pipeline removed |
-| `config/interests.yaml` | global acquisition config + later per-user DB profiles | prototype config removed |
+The canonical database owns users/preferences, literature, shared Bluesky data, researcher identity, digest snapshots and feedback events. RLS separates user-readable state from server-owned ingestion state.
 
-## Canonical literature identity
+## Phase 2 — literature
 
-`papers` is the scientific object. `paper_identifiers` registers stable aliases independently of presentation columns:
+Implemented:
 
-1. all DOI variants attached to the study, including preprint and journal DOI;
-2. OpenAlex work ID;
-3. PMID;
-4. exact normalized title fallback only when no stable identifier is known;
-5. strong title similarity + author overlap remains an in-memory deterministic fallback.
+- global recent OpenAlex Neuroscience/Psychology acquisition;
+- bioRxiv Neuroscience preprints + publication mappings;
+- Crossref and Europe PMC enrichment;
+- structured authors and provenance;
+- persistent DOI/OpenAlex/PMID aliases;
+- historical paper merging when later provenance proves two rows equivalent;
+- DB-first idempotent persistence.
 
-`paper_sources` stores where metadata/provenance came from. A source record is not a paper.
+The prototype per-user acquisition config and monolithic pipeline were removed.
 
-A later preprint→journal mapping can reveal that two already-persisted rows are the same study. `merge_papers(keep_id, remove_id)` moves identifiers, provenance, authorships, social signals, digest references, and paper events in one database transaction before deleting the duplicate.
+## Phase 3 — Bluesky
 
-## Author identity in Phase 2
+### Follow synchronization
 
-Author ingestion is intentionally conservative:
+A user profile stores a human-readable handle but synchronization resolves it to a stable DID. The complete public follow list is fetched before `replace_user_bluesky_follows` atomically marks removed follows inactive and current follows active. No partial API result mutates the graph.
 
-- ORCID is preferred when available;
-- otherwise OpenAlex author ID;
-- name-only authors receive a paper-scoped provisional identity rather than a global name match.
+### Unique-account scheduling
 
-The repository also searches existing ORCID/OpenAlex columns before creating a new author, so later enrichment can attach stronger identifiers without requiring prototype compatibility. Full Bluesky researcher identity resolution remains Phase 8.
+`get_stale_bluesky_accounts` returns distinct account rows only when at least one active user follows that DID. Therefore User A, B and C following researcher X still produce one feed fetch for X. Unfollowed accounts can remain cached but are no longer scheduled.
 
-## Scheduled jobs
+### Social event model
 
-The canonical specification defines these logical jobs:
+An AppView author-feed item is decomposed into:
 
-1. `sync_literature` — implemented in Phase 2.
-2. `sync_user_follow_graphs` — Phase 3.
-3. `sync_bluesky_accounts` — Phase 3.
-4. `resolve_social_papers` — Phase 3.
+1. the underlying `bluesky_posts` object;
+2. a `bluesky_post_events` actor action (`POST`, `REPOST`, `QUOTE`) with the action timestamp;
+3. zero or more normalized `bluesky_scholarly_links`.
+
+A recent repost of an old post uses the repost timestamp as the network-attention time while preserving the original post object/author. Quote posts remain intrinsic quote objects. Only posts exposing supported scholarly evidence are persisted in the MVP.
+
+### Durable resolution
+
+`bluesky_scholarly_links` is deliberately separate from `paper_social_signals`. Resolution order is:
+
+1. canonical DOI/PMID already present in `paper_identifiers`;
+2. DOI/PMID discovered from publisher-page metadata;
+3. exact normalized-title match when metadata provides a title;
+4. structured OpenAlex/Crossref/Europe PMC retrieval and canonical paper persistence;
+5. otherwise retain the link as unresolved for retry.
+
+After resolution, each actor event attached to that post becomes an idempotent `paper_social_signals` row.
+
+## Job boundaries
+
+1. `sync_literature` — implemented.
+2. `sync_user_follow_graphs` — implemented.
+3. `sync_bluesky_accounts` — implemented.
+4. `resolve_social_papers` — implemented.
 5. `resolve_researcher_identities` — later/minimal support as needed.
 6. `embed_new_papers` — Phase 4.
 7. `generate_weekly_digests` — Phase 6.
 8. `send_weekly_digests` — Phase 6.
 
-GitHub Actions remains sufficient for scheduled MVP execution; no additional worker platform is introduced before pilot evidence demands it.
+GitHub Actions remains sufficient for the lab MVP. No streaming/firehose infrastructure is introduced before pilot evidence demands it.

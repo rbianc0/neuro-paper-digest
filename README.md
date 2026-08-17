@@ -4,69 +4,112 @@ Neurofeed is a personalized scientific-literature discovery service built around
 
 This repository contains the Python ingestion backend. The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**.
 
-## Current implementation
+## Implemented architecture
 
 ### Phase 1 — database foundation
 
-The connected Supabase/PostgreSQL project contains the canonical MVP schema, pgvector, Supabase Auth integration points, RLS, feedback/digest state, shared Bluesky entities, and researcher-discovery entities. Migrations live under `supabase/migrations/`.
+Supabase/PostgreSQL contains the canonical MVP schema, pgvector, Supabase Auth integration points, RLS, shared literature state, shared Bluesky state, digest/feedback entities, and researcher-discovery entities.
 
 ### Phase 2 — global literature layer
 
-The literature pipeline is now DB-first:
-
 ```text
-OpenAlex (shared Neuroscience + Psychology corpus)
-                  +
-bioRxiv Neuroscience + publication mappings
+OpenAlex Neuroscience/Psychology + bioRxiv
                   ↓
-       deterministic in-memory dedup
+ deterministic canonicalization
                   ↓
-Crossref / Europe PMC bounded enrichment
+ Crossref / Europe PMC enrichment
                   ↓
-       canonical identifier resolution
-                  ↓
-             Supabase
- papers / paper_identifiers / paper_sources
- authors / paper_authors
+               Supabase
 ```
 
-Acquisition is global, not per user. User research descriptions and learned preferences will be applied later during candidate generation/ranking over this shared pool.
+Literature is acquired globally once. `paper_identifiers` and the service-only `merge_papers` operation preserve one scientific object across DOI/OpenAlex/PMID aliases and later preprint→publication mappings.
 
-A DOI, OpenAlex ID, PMID, preprint DOI, published DOI, or later preprint→journal mapping can resolve to the same canonical paper. If historical rows are later proven equivalent, the service-only `merge_papers` database function consolidates them atomically while preserving provenance and downstream references.
+### Phase 3 — shared Bluesky layer
 
-## Run locally
+```text
+Neurofeed profiles
+      ↓
+resolve handle → stable DID
+      ↓
+public Bluesky follow graph
+      ↓
+user_bluesky_follows
+      │
+      └──────────────┐
+                     ▼
+        unique active followed DIDs
+                     ↓
+        fetch each stale account once
+                     ↓
+      posts + actor attention events
+                     ↓
+        normalized scholarly links
+                     ↓
+       canonical paper resolution
+                     ↓
+          paper_social_signals
+```
+
+The same followed researcher is fetched once regardless of how many Neurofeed users follow them. Follow-graph replacement is atomic: the database is changed only after a complete successful public follow fetch. Failed account fetches use bounded exponential backoff.
+
+Raw network attention is stored separately from resolved paper signals:
+
+- `bluesky_posts`: underlying post objects;
+- `bluesky_post_events`: which followed DID posted/reposted/quoted a post and when;
+- `bluesky_scholarly_links`: DOI/PMID/scholarly URLs plus durable resolution state;
+- `paper_social_signals`: only links that have resolved to canonical papers.
+
+This means an unresolved publisher URL is not discarded and can be retried later.
+
+## Jobs
+
+### Literature
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install '.[dev]'
+neurofeed-sync-literature --lookback-days 8
+```
 
+### Bluesky follow graphs
+
+```bash
+neurofeed-sync-follow-graphs
+```
+
+### Shared stale-account cache
+
+```bash
+neurofeed-sync-bluesky-accounts \
+  --stale-hours 22 \
+  --lookback-days 8 \
+  --batch-size 1000 \
+  --max-workers 8
+```
+
+### Social paper resolution
+
+```bash
+neurofeed-resolve-social-papers --limit 2000
+```
+
+The Bluesky jobs use public reads only. Neurofeed does not request Bluesky passwords and does not create follows; Bluesky remains the source of truth for the researcher graph.
+
+## Environment
+
+```bash
 export OPENALEX_API_KEY='...'
 export SUPABASE_URL='https://yajsdhpaobqtduazpkkd.supabase.co'
 export SUPABASE_SECRET_KEY='...'
 export CROSSREF_MAILTO='you@example.org'   # optional
-
-neurofeed-sync-literature --lookback-days 8
-pytest -q
 ```
 
-`SUPABASE_SECRET_KEY` is a backend secret and must never be committed or exposed to a browser.
-
-## Configuration
-
-`config/literature.yaml` contains only global acquisition settings. It intentionally does **not** contain a user's research interests or Bluesky handle.
-
-The MVP currently acquires:
-
-- recent OpenAlex works whose topics include the Neuroscience or Psychology fields;
-- bioRxiv Neuroscience preprints;
-- bioRxiv publication mappings;
-- bounded Crossref enrichment for incomplete DOI/publication records;
-- bounded Europe PMC enrichment when biomedical abstract/PMID metadata is useful.
+`SUPABASE_SECRET_KEY` is server-only and must never be exposed to a browser/client.
 
 ## GitHub Actions
 
-`.github/workflows/collect.yml` runs the global literature job weekly and supports manual runs. It writes canonical state directly to Supabase. The generated JSON file is only a short-lived diagnostic artifact; Git is no longer the database.
+- `.github/workflows/collect.yml` — weekly global literature ingestion.
+- `.github/workflows/bluesky.yml` — daily follow synchronization, unique-account feed refresh, and social-paper resolution.
+
+Both workflows use the same canonical Supabase state. Generated JSON is diagnostic only; Git is not the database.
 
 Required repository secrets:
 
@@ -77,12 +120,6 @@ Optional repository variable:
 
 - `CROSSREF_MAILTO`
 
-## Architectural boundary
+## Next phase
 
-Phase 2 does not perform user ranking and does not crawl a user's Bluesky graph. Those are separate responsibilities:
-
-- Phase 3: shared unique-DID Bluesky ingestion;
-- Phase 4: user representation and decomposed semantic + Bluesky ranking;
-- Phase 5+: feedback, newsletter, web UI, researcher discovery.
-
-Bluesky remains the sole explicit researcher-follow graph throughout the product.
+Phase 4 adds the user representation and transparent ranking model: declared research profile, embeddings, semantic candidates, Bluesky subscore, broader-discovery lane, and decomposed recommendation scores. No recommendation or newsletter logic belongs in the ingestion services above.
