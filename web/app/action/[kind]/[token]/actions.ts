@@ -2,7 +2,6 @@
 
 import { redirect } from "next/navigation";
 import {
-  actionForKind,
   hashInteractionToken,
   inspectEmailToken,
   lessReasons,
@@ -32,8 +31,4 @@ export async function confirmEmailAction(
   });
   if (error) redirect("/feedback/invalid");
   redirect(`/feedback/thanks?action=${encodeURIComponent(expectedAction)}`);
-}
-
-export function expectedActionForKind(kind: string) {
-  return actionForKind(kind);
 }
