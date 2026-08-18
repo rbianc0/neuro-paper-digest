@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuro-paper-digest"
-version = "0.2.0"
-description = "Neurofeed global literature ingestion and canonicalization service"
+version = "0.4.0"
+description = "Neurofeed literature, Bluesky network, and transparent ranking backend"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.32,<3",
@@ -20,6 +20,10 @@ dev = ["pytest>=8,<9"]
 
 [project.scripts]
 neurofeed-sync-literature = "neuro_digest.jobs.sync_literature:main"
+neurofeed-sync-follows = "neuro_digest.jobs.sync_user_follow_graphs:main"
+neurofeed-sync-bluesky = "neuro_digest.jobs.sync_bluesky_accounts:main"
+neurofeed-resolve-social = "neuro_digest.jobs.resolve_social_papers:main"
+neurofeed-embed = "neuro_digest.jobs.embed_new_papers:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
