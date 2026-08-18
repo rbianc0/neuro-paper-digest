@@ -1,12 +1,7 @@
-.venv/
-__pycache__/
-.pytest_cache/
-*.pyc
 .env
 .env.*
 !.env.example
 
-# Neurofeed web app
 web/node_modules/
 web/.next/
 web/.vercel/
