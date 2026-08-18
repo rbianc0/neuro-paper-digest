@@ -9,9 +9,10 @@ import { refreshFeedback } from "./feedback";
 import { rankUser } from "./ranking";
 
 const SUMMARY_MODEL = "gpt-5.6-luna";
-const GROUPS = ["Must Read", "From Your Bluesky Network", "Highly Relevant", "Broader Discovery"] as const;
+const SECTIONS = ["Must Read", "From Your Bluesky Network", "Highly Relevant", "Broader Discovery"] as const;
 
 type DigestKind = "initial" | "weekly";
+type Action = "CLICK" | "SAVE" | "MORE_LIKE_THIS" | "LESS_LIKE_THIS";
 type Paper = {
   paper_id: string;
   title: string;
@@ -21,20 +22,25 @@ type Paper = {
   authors: Array<{ name?: string }>;
 };
 type Narrative = { paperId: string; summary: string; why: string };
-type RenderedItem = { paper: Paper; narrative: Narrative; section: string; links: Record<string, string> };
+type RenderedItem = {
+  paper: Paper;
+  narrative: Narrative;
+  section: string;
+  links: { read: string; save: string; more: string; less: string };
+};
 
-function period() {
+function digestPeriod() {
   const end = new Date();
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - 6);
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 }
 
-function version(kind: DigestKind) {
+function digestVersion(kind: DigestKind) {
   return kind === "initial" ? "initial-v1" : "weekly-v1";
 }
 
-function section(item: RankedPaper, index: number) {
+function sectionFor(item: RankedPaper, index: number) {
   if (index < 3) return "Must Read";
   if (item.blueskyScore >= 0.35) return "From Your Bluesky Network";
   if (item.lane === "broad") return "Broader Discovery";
@@ -44,28 +50,30 @@ function section(item: RankedPaper, index: number) {
 async function summarize(papers: Paper[], ranked: RankedPaper[]) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is required");
-  const ranking = new Map(ranked.map((item) => [item.paperId, item]));
-  const input = papers.map((paper) => ({
-    paperId: paper.paper_id,
-    title: paper.title,
-    abstract: (paper.abstract || "").slice(0, 5000),
-    journal: paper.journal,
-    authors: (paper.authors || []).map((author) => author.name).filter(Boolean),
-    recommendation: ranking.get(paper.paper_id),
-  }));
 
+  const scores = new Map(ranked.map((item) => [item.paperId, item]));
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: SUMMARY_MODEL,
-      reasoning: { effort: "max" },
+      reasoning: { effort: "xhigh" },
       input: [
         {
           role: "system",
-          content: "Write concise neuroscience newsletter copy. Use only supplied metadata and abstract. Never invent findings, methods, samples, significance, or claims. Explain why a paper was recommended only from the supplied ranking signals.",
+          content: "Write concise neuroscience newsletter copy using only the supplied metadata, abstract, and ranking signals. Never invent findings, methods, samples, significance, or claims.",
         },
-        { role: "user", content: JSON.stringify(input) },
+        {
+          role: "user",
+          content: JSON.stringify(papers.map((paper) => ({
+            paperId: paper.paper_id,
+            title: paper.title,
+            abstract: (paper.abstract || "").slice(0, 5000),
+            journal: paper.journal,
+            authors: paper.authors.map((author) => author.name).filter(Boolean),
+            recommendation: scores.get(paper.paper_id),
+          }))),
+        },
       ],
       text: {
         format: {
@@ -96,21 +104,28 @@ async function summarize(papers: Paper[], ranked: RankedPaper[]) {
       },
     }),
   });
-  if (!response.ok) throw new Error(`OpenAI summary failed (${response.status}): ${(await response.text()).slice(0, 500)}`);
 
+  if (!response.ok) {
+    throw new Error(`OpenAI summary failed (${response.status}): ${(await response.text()).slice(0, 500)}`);
+  }
   const body = await response.json() as {
     output_text?: string;
     output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
   };
-  const outputText = body.output_text || body.output?.flatMap((item) => item.content || []).find((part) => part.type === "output_text")?.text;
-  if (!outputText) throw new Error("OpenAI returned no structured summary output");
-  const parsed = JSON.parse(outputText) as { items: Narrative[] };
-  return new Map(parsed.items.map((item) => [item.paperId, item]));
+  const text = body.output_text || body.output?.flatMap((item) => item.content || []).find((part) => part.type === "output_text")?.text;
+  if (!text) throw new Error("OpenAI returned no structured summary output");
+
+  const parsed = JSON.parse(text) as { items?: Narrative[] };
+  const narratives = new Map((parsed.items || []).map((item) => [item.paperId, item]));
+  for (const paper of papers) {
+    if (!narratives.has(paper.paper_id)) throw new Error(`Summary missing for paper ${paper.paper_id}`);
+  }
+  return narratives;
 }
 
 function escapeHtml(value: string) {
-  const replacements: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-  return value.replace(/[&<>"']/g, (char) => replacements[char]);
+  const chars: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return value.replace(/[&<>"']/g, (char) => chars[char]);
 }
 
 function render(kind: DigestKind, displayName: string | null, items: RenderedItem[]) {
@@ -119,55 +134,49 @@ function render(kind: DigestKind, displayName: string | null, items: RenderedIte
   const title = kind === "initial" ? "Neurofeed" : "Neurofeed Weekly";
   const html = [
     '<!doctype html><html><body style="font-family:Arial,sans-serif;max-width:760px;margin:0 auto;padding:24px;color:#111;line-height:1.45">',
-    `<h1 style="margin-bottom:4px">${title}</h1>`,
-    `<p>${escapeHtml(greeting)} ${escapeHtml(intro)}</p>`,
+    `<h1>${title}</h1><p>${escapeHtml(greeting)} ${escapeHtml(intro)}</p>`,
   ];
   const text = [title.toUpperCase(), "", greeting, intro, ""];
 
-  for (const group of GROUPS) {
-    const groupItems = items.filter((item) => item.section === group);
-    if (!groupItems.length) continue;
-    html.push(`<h2 style="margin-top:30px">${escapeHtml(group)}</h2>`);
-    text.push(group.toUpperCase(), "-");
-    for (const item of groupItems) {
-      const authors = (item.paper.authors || []).map((author) => author.name).filter(Boolean).slice(0, 3).join(", ");
+  for (const section of SECTIONS) {
+    const sectionItems = items.filter((item) => item.section === section);
+    if (!sectionItems.length) continue;
+    html.push(`<h2 style="margin-top:30px">${escapeHtml(section)}</h2>`);
+    text.push(section.toUpperCase(), "-");
+
+    for (const item of sectionItems) {
+      const authors = item.paper.authors.map((author) => author.name).filter(Boolean).slice(0, 3).join(", ");
       const meta = [authors, item.paper.journal].filter(Boolean).join(" · ");
       html.push(
-        '<div style="margin:0 0 26px;padding:0 0 20px;border-bottom:1px solid #ddd">',
-        `<h3 style="margin-bottom:5px"><a href="${escapeHtml(item.links.read)}">${escapeHtml(item.paper.title)}</a></h3>`,
+        '<div style="margin-bottom:26px;padding-bottom:20px;border-bottom:1px solid #ddd">',
+        `<h3><a href="${escapeHtml(item.links.read)}">${escapeHtml(item.paper.title)}</a></h3>`,
         meta ? `<div style="color:#555;font-size:14px">${escapeHtml(meta)}</div>` : "",
         `<p>${escapeHtml(item.narrative.summary)}</p>`,
         `<p><strong>Why this reached you:</strong> ${escapeHtml(item.narrative.why)}</p>`,
         `<p style="font-size:14px"><a href="${escapeHtml(item.links.read)}">Read paper</a> · <a href="${escapeHtml(item.links.save)}">Save</a> · <a href="${escapeHtml(item.links.more)}">More like this</a> · <a href="${escapeHtml(item.links.less)}">Less like this</a></p>`,
         "</div>",
       );
-      text.push(item.paper.title, meta, item.narrative.summary, `Why this reached you: ${item.narrative.why}`, `Read: ${item.links.read}`, `Save: ${item.links.save}`, `More like this: ${item.links.more}`, `Less like this: ${item.links.less}`, "");
+      text.push(
+        item.paper.title,
+        meta,
+        item.narrative.summary,
+        `Why this reached you: ${item.narrative.why}`,
+        `Read: ${item.links.read}`,
+        `Save: ${item.links.save}`,
+        `More like this: ${item.links.more}`,
+        `Less like this: ${item.links.less}`,
+        "",
+      );
     }
   }
+
   const footer = "Neurofeed uses your interests, your Bluesky scientific network and your feedback to rank papers. Following researchers remains on Bluesky.";
   html.push(`<p style="margin-top:32px;color:#666;font-size:12px">${footer}</p></body></html>`);
   text.push(footer);
   return { html: html.join(""), text: text.join("\n") };
 }
 
-async function interaction(userId: string, paperId: string, digestId: string, action: "CLICK" | "SAVE" | "MORE_LIKE_THIS" | "LESS_LIKE_THIS", redirectUrl: string | null, metadata: Record<string, unknown>) {
-  const db = createSupabaseServiceClient();
-  const raw = token();
-  const { error } = await db.from("interaction_tokens").insert({
-    token_hash: sha256(raw),
-    user_id: userId,
-    paper_id: paperId,
-    digest_id: digestId,
-    action_type: action,
-    redirect_url: redirectUrl,
-    expires_at: new Date(Date.now() + 45 * 86_400_000).toISOString(),
-    single_use: action !== "CLICK",
-    metadata,
-  });
-  if (error) throw error;
-
-  const base = (process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/$/, "");
-  if (!base) throw new Error("NEXT_PUBLIC_SITE_URL is required");
+function link(base: string, action: Action, raw: string) {
   if (action === "CLICK") return `${base}/r/${encodeURIComponent(raw)}`;
   const slug = action === "SAVE" ? "save" : action === "MORE_LIKE_THIS" ? "more" : "less";
   return `${base}/action/${slug}/${encodeURIComponent(raw)}`;
@@ -175,18 +184,19 @@ async function interaction(userId: string, paperId: string, digestId: string, ac
 
 async function createDigest(userId: string, kind: DigestKind) {
   const db = createSupabaseServiceClient();
-  const dates = period();
-  const digestVersion = version(kind);
+  const dates = digestPeriod();
+  const version = digestVersion(kind);
+
   const { data: existing, error: existingError } = await db
     .from("digests")
     .select("id,status")
     .eq("user_id", userId)
     .eq("period_start", dates.start)
     .eq("period_end", dates.end)
-    .eq("version", digestVersion)
+    .eq("version", version)
     .maybeSingle();
   if (existingError) throw existingError;
-  if (existing?.status === "GENERATED" || existing?.status === "SENT" || existing?.status === "SENDING") return existing.id as string;
+  if (existing && ["GENERATED", "SENDING", "SENT"].includes(existing.status)) return existing.id as string;
   if (existing) {
     const { error } = await db.from("digests").delete().eq("id", existing.id);
     if (error) throw error;
@@ -204,52 +214,68 @@ async function createDigest(userId: string, kind: DigestKind) {
   if (paperError) throw paperError;
   if (!profile.newsletter_enabled) return null;
 
-  const papers = (paperRows || []) as Paper[];
-  const missingAuthors = papers.filter((paper) => !paper.authors?.length).map((paper) => paper.paper_id);
-  if (missingAuthors.length) {
-    const { data: metadataRows, error } = await db.from("papers").select("id,metadata").in("id", missingAuthors);
-    if (error) throw error;
-    const metadata = new Map((metadataRows || []).map((row) => [row.id, row.metadata]));
-    for (const paper of papers) {
-      if (paper.authors?.length) continue;
-      const raw = metadata.get(paper.paper_id) as { openalex_authors?: Array<{ name?: string }> } | undefined;
-      paper.authors = raw?.openalex_authors || [];
-    }
-  }
+  const paperMap = new Map(((paperRows || []) as Paper[]).map((paper) => [paper.paper_id, paper]));
+  const orderedPapers = ranked
+    .map((item) => paperMap.get(item.paperId))
+    .filter((paper): paper is Paper => Boolean(paper?.canonical_url));
+  if (!orderedPapers.length) return null;
 
-  const paperMap = new Map(papers.map((paper) => [paper.paper_id, paper]));
-  const copy = await summarize(papers, ranked);
+  const narratives = await summarize(orderedPapers, ranked);
   const digestId = randomUUID();
-  const { error: createError } = await db.from("digests").insert({
+  const { error: digestError } = await db.from("digests").insert({
     id: digestId,
     user_id: userId,
     period_start: dates.start,
     period_end: dates.end,
-    version: digestVersion,
+    version,
     status: "PREPARING",
   });
-  if (createError) throw createError;
+  if (digestError) throw digestError;
 
   try {
-    const renderedItems: RenderedItem[] = [];
-    for (let index = 0; index < ranked.length; index++) {
-      const item = ranked[index];
+    const base = (process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/$/, "");
+    if (!base) throw new Error("NEXT_PUBLIC_SITE_URL is required");
+
+    const tokenRows: Record<string, unknown>[] = [];
+    const itemRows: Record<string, unknown>[] = [];
+    const rendered: RenderedItem[] = [];
+    let rank = 0;
+
+    for (const item of ranked) {
       const paper = paperMap.get(item.paperId);
-      const narrative = copy.get(item.paperId);
-      if (!paper || !narrative) continue;
-      const itemSection = section(item, index);
-      const metadata = { ranking: item, section: itemSection };
-      const links = {
-        read: await interaction(userId, item.paperId, digestId, "CLICK", paper.canonical_url, metadata),
-        save: await interaction(userId, item.paperId, digestId, "SAVE", null, metadata),
-        more: await interaction(userId, item.paperId, digestId, "MORE_LIKE_THIS", null, metadata),
-        less: await interaction(userId, item.paperId, digestId, "LESS_LIKE_THIS", null, metadata),
-      };
-      const { error } = await db.from("digest_items").insert({
+      if (!paper?.canonical_url) continue;
+      const narrative = narratives.get(item.paperId);
+      if (!narrative) throw new Error(`Summary missing for paper ${item.paperId}`);
+
+      const section = sectionFor(item, rank);
+      const metadata = { ranking: item, section };
+      const actions: Array<[Action, string]> = [
+        ["CLICK", "read"], ["SAVE", "save"], ["MORE_LIKE_THIS", "more"], ["LESS_LIKE_THIS", "less"],
+      ];
+      const links = {} as RenderedItem["links"];
+
+      for (const [action, key] of actions) {
+        const raw = token();
+        links[key as keyof RenderedItem["links"]] = link(base, action, raw);
+        tokenRows.push({
+          token_hash: sha256(raw),
+          user_id: userId,
+          paper_id: item.paperId,
+          digest_id: digestId,
+          action_type: action,
+          redirect_url: action === "CLICK" ? paper.canonical_url : null,
+          expires_at: new Date(Date.now() + 45 * 86_400_000).toISOString(),
+          single_use: action !== "CLICK",
+          metadata,
+        });
+      }
+
+      rank++;
+      itemRows.push({
         digest_id: digestId,
         paper_id: item.paperId,
-        rank: index + 1,
-        section: itemSection,
+        rank,
+        section,
         final_score: item.finalScore,
         semantic_score: item.semanticScore,
         bluesky_score: item.blueskyScore,
@@ -265,23 +291,27 @@ async function createDigest(userId: string, kind: DigestKind) {
         summary_model: SUMMARY_MODEL,
         summary_input_hash: sha256(`${paper.title}\n${paper.abstract || ""}\n${JSON.stringify(item)}`),
       });
-      if (error) throw error;
-      renderedItems.push({ paper, narrative, section: itemSection, links });
+      rendered.push({ paper, narrative, section, links });
     }
 
-    if (!renderedItems.length) throw new Error("Digest contains no renderable papers");
-    const rendered = render(kind, profile.display_name, renderedItems);
+    if (!rendered.length) throw new Error("Digest contains no renderable papers");
+    const { error: tokenError } = await db.from("interaction_tokens").insert(tokenRows);
+    if (tokenError) throw tokenError;
+    const { error: itemError } = await db.from("digest_items").insert(itemRows);
+    if (itemError) throw itemError;
+
+    const output = render(kind, profile.display_name, rendered);
     const subject = kind === "initial"
-      ? `Your first Neurofeed — ${renderedItems.length} papers for you`
-      : `Neurofeed Weekly — ${renderedItems.length} papers for you`;
-    const { error } = await db.from("digests").update({
+      ? `Your first Neurofeed — ${rendered.length} papers for you`
+      : `Neurofeed Weekly — ${rendered.length} papers for you`;
+    const { error: finishError } = await db.from("digests").update({
       subject,
-      rendered_html: rendered.html,
-      rendered_text: rendered.text,
-      content_hash: sha256(`${rendered.html}\n${rendered.text}`),
+      rendered_html: output.html,
+      rendered_text: output.text,
+      content_hash: sha256(`${output.html}\n${output.text}`),
       status: "GENERATED",
     }).eq("id", digestId);
-    if (error) throw error;
+    if (finishError) throw finishError;
     return digestId;
   } catch (error) {
     await db.from("digests").delete().eq("id", digestId);
@@ -335,9 +365,14 @@ export async function sendDigest(digestId: string) {
     throw new Error("SMTP configuration is incomplete");
   }
 
-  let smtpAccepted = false;
+  let accepted = false;
   try {
-    const transport = nodemailer.createTransport({ host: "smtp.gmail.com", port: 587, secure: false, auth: { user: username, pass: password } });
+    const transport = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false,
+      auth: { user: username, pass: password },
+    });
     const domain = from.match(/@([^>\s]+)>?$/)?.[1] || "neurofeed.local";
     const messageId = `<neurofeed-${digestId}@${domain}>`;
     const result = await transport.sendMail({
@@ -349,7 +384,7 @@ export async function sendDigest(digestId: string) {
       messageId,
       headers: { "X-Neurofeed-Digest-ID": digestId },
     });
-    smtpAccepted = true;
+    accepted = true;
 
     const { error: sentError } = await db.from("digests").update({
       status: "SENT",
@@ -360,8 +395,8 @@ export async function sendDigest(digestId: string) {
     }).eq("id", digestId).eq("status", "SENDING");
     if (sentError) throw sentError;
 
-    const { data: items, error: itemError } = await db.from("digest_items").select("paper_id").eq("digest_id", digestId);
-    if (!itemError && items?.length) {
+    const { data: items } = await db.from("digest_items").select("paper_id").eq("digest_id", digestId);
+    if (items?.length) {
       const { error: impressionError } = await db.from("user_paper_events").insert(items.map((item) => ({
         user_id: digest.user_id,
         paper_id: item.paper_id,
@@ -372,10 +407,13 @@ export async function sendDigest(digestId: string) {
       if (impressionError) console.error("Failed to record newsletter impressions", impressionError);
     }
     return { sent: true, alreadySent: false };
-  } catch (sendError) {
-    if (!smtpAccepted) {
-      await db.from("digests").update({ status: "GENERATED", delivery_error: String(sendError).slice(0, 1000) }).eq("id", digestId).eq("status", "SENDING");
+  } catch (error) {
+    if (!accepted) {
+      await db.from("digests").update({
+        status: "GENERATED",
+        delivery_error: String(error).slice(0, 1000),
+      }).eq("id", digestId).eq("status", "SENDING");
     }
-    throw sendError;
+    throw error;
   }
 }
