@@ -23,6 +23,12 @@ type Network = {
   authored_by_followed: boolean;
 };
 
+type BroadCandidate = {
+  paper_id: string;
+  venue_priority: boolean;
+  cited_by_count: number | null;
+};
+
 const STOP = new Set([
   "the", "and", "for", "with", "from", "into", "using", "study", "studies", "paper",
   "research", "brain", "neural", "neuroscience", "analysis", "data", "this", "that",
@@ -105,11 +111,17 @@ export async function rankUser(userId: string): Promise<RankedPaper[]> {
   ]);
   for (const result of [semanticResult, networkResult, broadResult, seenResult]) if (result.error) throw result.error;
 
-  const declared = new Map((semanticResult.data || []).map((row: any) => [row.paper_id, Number(row.similarity)]));
-  const network = new Map((networkResult.data || []).map((row: any) => [row.paper_id, row as Network]));
-  const broad = new Map((broadResult.data || []).map((row: any) => [row.paper_id, row]));
-  const seen = new Set((seenResult.data || []).map((row: any) => row.paper_id));
-  const ids = [...new Set([...declared.keys(), ...network.keys(), ...broad.keys()])].filter((id) => !seen.has(id));
+  const declared = new Map<string, number>(
+    (semanticResult.data || []).map((row: { paper_id: string; similarity: number }) => [row.paper_id, Number(row.similarity)]),
+  );
+  const network = new Map<string, Network>(
+    (networkResult.data || []).map((row: Network) => [row.paper_id, row]),
+  );
+  const broad = new Map<string, BroadCandidate>(
+    (broadResult.data || []).map((row: BroadCandidate) => [row.paper_id, row]),
+  );
+  const seen = new Set<string>((seenResult.data || []).map((row: { paper_id: string }) => row.paper_id));
+  const ids: string[] = [...new Set<string>([...declared.keys(), ...network.keys(), ...broad.keys()])].filter((id) => !seen.has(id));
   if (!ids.length) return [];
 
   const { data: papers, error: paperError } = await db
@@ -129,7 +141,9 @@ export async function rankUser(userId: string): Promise<RankedPaper[]> {
       if (!vector) continue;
       const { data, error } = await db.rpc("score_papers", { p_paper_ids: ids, p_query_embedding: vector });
       if (error) throw error;
-      for (const row of data || []) target.set(row.paper_id, Number(row.similarity));
+      for (const row of (data || []) as Array<{ paper_id: string; similarity: number }>) {
+        target.set(row.paper_id, Number(row.similarity));
+      }
     }
   }
 
@@ -140,7 +154,7 @@ export async function rankUser(userId: string): Promise<RankedPaper[]> {
     const social = blueskyScore(network.get(paper.id));
     const fit = fitScore(profile.research_description || "", paper);
     const quality = qualityScore(paper);
-    const broadRow: any = broad.get(paper.id);
+    const broadRow = broad.get(paper.id);
     const broadScore = broadRow
       ? (broadRow.venue_priority ? 1 : clamp(0.35 + 0.15 * Math.log1p(Number(broadRow.cited_by_count || 0))))
       : 0;
