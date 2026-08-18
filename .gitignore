@@ -5,3 +5,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Neurofeed web app
+web/node_modules/
+web/.next/
+web/.vercel/
+web/*.tsbuildinfo
