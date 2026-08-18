@@ -1,6 +1,12 @@
 from datetime import date
 
-from neuro_digest.ranking import bluesky_subscore, fit_subscore, rank_for_user
+from neuro_digest.ranking import (
+    bluesky_subscore,
+    fit_subscore,
+    learned_similarity,
+    personal_semantic_similarity,
+    rank_for_user,
+)
 
 
 def test_followed_author_creates_strong_bluesky_floor():
@@ -44,12 +50,30 @@ def test_fit_rewards_method_and_species_overlap():
     assert matching > mismatch
 
 
+def test_learned_similarity_rewards_positive_and_penalizes_negative_proximity():
+    preferred = learned_similarity(0.90, 0.20)
+    disliked = learned_similarity(0.30, 0.85)
+    assert preferred is not None and disliked is not None
+    assert preferred > disliked
+
+
+def test_declared_profile_remains_anchor_at_partial_learning_weight():
+    score = personal_semantic_similarity(0.90, 0.20, None, 0.10)
+    assert 0.80 < score < 0.90
+
+
 class FakeRepository:
     def profile(self, user_id):
         return {"user_id": user_id, "research_description": "human MEG fear conditioning", "discovery_balance": 0.25}
 
-    def declared_embedding(self, user_id):
-        return "[0.1,0.2]"
+    def embeddings(self, user_id):
+        return {
+            "user_id": user_id,
+            "declared_embedding": "[0.1,0.2]",
+            "learned_positive_embedding": None,
+            "learned_negative_embedding": None,
+            "feedback_count": 0,
+        }
 
     def semantic_candidates(self, vector, published_after, limit):
         return [
