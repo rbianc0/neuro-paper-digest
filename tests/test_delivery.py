@@ -57,8 +57,8 @@ def test_smtp_sender_uses_starttls_and_deterministic_digest_message_id():
     assert smtp.calls == [
         "ehlo",
         "starttls",
-        ("login", "neurofeed.test@gmail.com", "app-password"),
         "ehlo",
+        ("login", "neurofeed.test@gmail.com", "app-password"),
         "send_message",
     ]
     assert smtp.message["To"] == "scientist@example.org"
