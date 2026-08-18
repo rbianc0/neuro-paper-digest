@@ -9,8 +9,26 @@ from neuro_digest.sources.bluesky import BlueskyAccountRef, BlueskyClient
 LOG = logging.getLogger(__name__)
 
 
+def _profiles_for_sync(social: SocialRepository):
+    try:
+        rows = social.api._request(
+            "GET",
+            "profiles",
+            params={
+                "select": "user_id,bluesky_handle,bluesky_did,last_bluesky_sync_at,bluesky_sync_requested_at",
+                "bluesky_handle": "not.is.null",
+                "order": "bluesky_sync_requested_at.desc.nullslast,last_bluesky_sync_at.asc.nullsfirst,created_at.asc",
+            },
+        )
+        if rows is not None:
+            return rows
+    except AttributeError:
+        pass
+    return social.profiles_with_bluesky()
+
+
 def sync_user_follow_graphs(social: SocialRepository | None = None, client: BlueskyClient | None = None) -> tuple[int, int, int]:
-    social = social or SocialRepository(); client = client or BlueskyClient(); users = social.profiles_with_bluesky(); succeeded = failed = follows_total = 0
+    social = social or SocialRepository(); client = client or BlueskyClient(); users = _profiles_for_sync(social); succeeded = failed = follows_total = 0
     for profile in users:
         user_id = profile["user_id"]; handle = profile["bluesky_handle"]
         try:
