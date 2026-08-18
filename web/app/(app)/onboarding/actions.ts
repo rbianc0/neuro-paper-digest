@@ -1,7 +1,10 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { start } from "workflow/api";
+
 import { requireUser } from "@/lib/auth";
+import { bootstrapUser } from "@/workflows/bootstrap-user";
 
 export async function saveOnboarding(formData: FormData) {
   const { supabase, user } = await requireUser();
@@ -33,5 +36,12 @@ export async function saveOnboarding(formData: FormData) {
   if (error) {
     redirect(`/onboarding?error=${encodeURIComponent(error.message.slice(0, 220))}`);
   }
+
+  try {
+    await start(bootstrapUser, [user.id]);
+  } catch (workflowError) {
+    redirect(`/onboarding?error=${encodeURIComponent(String(workflowError).slice(0, 220))}`);
+  }
+
   redirect("/latest");
 }
