@@ -76,8 +76,6 @@ def bluesky_subscore(network: dict[str, Any] | None) -> float:
     recency = math.exp(-_signal_days_old(network.get("latest_signal_at")) / 7.0)
     social = 0.45 * independent + 0.20 * direct + 0.15 * quote + 0.05 * repost + 0.15 * recency
     if network.get("authored_by_followed"):
-        # Authorship is qualitatively distinct from discussion. It provides a
-        # strong floor while still allowing independent discussion to add value.
         social = max(0.72, social)
     return _clamp(social)
 
@@ -104,7 +102,7 @@ def _detected_features(text: str, feature_config: dict[str, Any]) -> set[str]:
     found: set[str] = set()
     for feature_type, groups in feature_config.items():
         for name, aliases in (groups or {}).items():
-            if any(f" {alias.casefold()} " in normalized or alias.casefold() in normalized for alias in aliases):
+            if any(f" {alias.casefold()} " in normalized for alias in aliases):
                 found.add(f"{feature_type}:{name}")
     return found
 
@@ -114,7 +112,6 @@ def fit_subscore(profile_text: str, paper: dict[str, Any], *, feature_config: di
     profile_features = _detected_features(profile_text, feature_config)
     paper_features = _detected_features(paper_text, feature_config)
     structured = len(profile_features & paper_features) / max(1, len(profile_features)) if profile_features else 0.0
-
     profile_tokens = _tokens(profile_text)
     paper_tokens = _tokens(paper_text)
     keyword = len(profile_tokens & paper_tokens) / max(1, min(len(profile_tokens), 20)) if profile_tokens else 0.0
@@ -172,10 +169,16 @@ class RankingRepository:
 
 
 def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", repository: RankingRepository | None = None, today: date | None = None) -> list[RankedPaper]:
-    config = load_config(config_path); ranking_cfg = config.get("ranking", {}); feature_cfg = config.get("features", {}); repo = repository or RankingRepository(); today = today or date.today()
-    profile = repo.profile(user_id); profile_text = profile.get("research_description") or ""
+    config = load_config(config_path)
+    ranking_cfg = config.get("ranking", {})
+    feature_cfg = config.get("features", {})
+    repo = repository or RankingRepository()
+    today = today or date.today()
+    profile = repo.profile(user_id)
+    profile_text = profile.get("research_description") or ""
     vector = repo.declared_embedding(user_id)
-    lookback_days = int(ranking_cfg.get("lookback_days", 21)); published_after = date.fromordinal(today.toordinal() - lookback_days).isoformat()
+    lookback_days = int(ranking_cfg.get("lookback_days", 21))
+    published_after = date.fromordinal(today.toordinal() - lookback_days).isoformat()
     priority_venues = [venue.casefold() for venue in ranking_cfg.get("priority_venues", [])]
 
     semantic_rows = repo.semantic_candidates(vector, published_after, int(ranking_cfg.get("semantic_candidates", 400)))
@@ -183,6 +186,7 @@ def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", rep
     broad_rows = repo.broad_candidates(published_after, priority_venues, int(ranking_cfg.get("broad_candidates", 200)))
     seen = repo.seen_papers(user_id)
 
+    semantic_candidate_ids = {row["paper_id"] for row in semantic_rows}
     semantic = {row["paper_id"]: _clamp(row.get("similarity", 0.0)) for row in semantic_rows}
     network = {row["paper_id"]: row for row in network_rows}
     broad = {row["paper_id"]: row for row in broad_rows}
@@ -193,8 +197,10 @@ def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", rep
     for row in repo.semantic_scores(missing_semantic, vector):
         semantic[row["paper_id"]] = _clamp(row.get("similarity", 0.0))
 
-    papers = repo.papers(union_ids); weights = ranking_cfg.get("weights", {})
-    priority_set = set(priority_venues); ranked: list[RankedPaper] = []
+    papers = repo.papers(union_ids)
+    weights = ranking_cfg.get("weights", {})
+    priority_set = set(priority_venues)
+    ranked: list[RankedPaper] = []
     for paper_id in union_ids:
         paper = papers.get(paper_id)
         if not paper:
@@ -219,9 +225,6 @@ def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", rep
             "recency": recency_score,
         }
         final_score = sum(float(weights.get(name, 0.0)) * value for name, value in components.items())
-        # Broad discovery is a deliberate lane, not simply low semantic score.
-        # Strong semantic/network candidates that also happen to be high-impact
-        # remain in the focused lane.
         lane = "broad" if broad_row and semantic_score < 0.58 and bluesky_score < 0.35 else "focused"
         ranked.append(RankedPaper(
             paper_id=paper_id,
@@ -235,20 +238,27 @@ def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", rep
             recency_score=recency_score,
             lane=lane,
             provenance={
-                "semantic_candidate": paper_id in {row["paper_id"] for row in semantic_rows},
+                "semantic_candidate": paper_id in semantic_candidate_ids,
                 "network": network.get(paper_id),
                 "broad_candidate": bool(broad_row),
             },
         ))
 
     ranked.sort(key=lambda item: item.final_score, reverse=True)
-    target = int(ranking_cfg.get("target_papers", 16)); broad_fraction = float(profile.get("discovery_balance") if profile.get("discovery_balance") is not None else ranking_cfg.get("default_broad_fraction", 0.25)); broad_target = max(0, min(target, round(target * broad_fraction))); focused_target = target - broad_target
+    target = int(ranking_cfg.get("target_papers", 16))
+    broad_fraction = float(
+        profile.get("discovery_balance")
+        if profile.get("discovery_balance") is not None
+        else ranking_cfg.get("default_broad_fraction", 0.25)
+    )
+    broad_target = max(0, min(target, round(target * broad_fraction)))
+    focused_target = target - broad_target
     focused = [item for item in ranked if item.lane == "focused"][:focused_target]
     broad_items = [item for item in ranked if item.lane == "broad"][:broad_target]
     selected = [*focused, *broad_items]
     if len(selected) < target:
         selected_ids = {item.paper_id for item in selected}
-        selected.extend(item for item in ranked if item.paper_id not in selected_ids and item not in selected[:target - len(selected)])
-        selected = selected[:target]
+        remaining = [item for item in ranked if item.paper_id not in selected_ids]
+        selected.extend(remaining[: target - len(selected)])
     selected.sort(key=lambda item: item.final_score, reverse=True)
-    return selected
+    return selected[:target]
