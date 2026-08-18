@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
-import { confirmEmailAction, expectedActionForKind } from "./actions";
-import { inspectEmailToken } from "@/lib/email-actions";
+import { confirmEmailAction } from "./actions";
+import { actionForKind, inspectEmailToken } from "@/lib/email-actions";
 import { createSupabaseServiceClient } from "@/lib/supabase/service";
 
 const labels: Record<string, string> = {
@@ -15,7 +15,7 @@ export default async function EmailActionPage({
   params: Promise<{ kind: string; token: string }>;
 }) {
   const { kind, token: rawToken } = await params;
-  const expectedAction = expectedActionForKind(kind);
+  const expectedAction = actionForKind(kind);
   if (!expectedAction) notFound();
 
   const token = await inspectEmailToken(rawToken);
