@@ -10,6 +10,7 @@ from dateutil.parser import isoparse
 
 from neuro_digest.config import load_config
 from neuro_digest.db import SupabaseDataAPI
+from neuro_digest.feedback import learned_weight
 
 TOKEN_RE = re.compile(r"[a-z][a-z0-9+:/-]{2,}")
 STOPWORDS = {
@@ -93,6 +94,29 @@ def recency_subscore(paper: dict[str, Any], *, today: date) -> float:
     return _clamp(math.exp(-age / 14.0))
 
 
+def learned_similarity(positive_similarity: float | None, negative_similarity: float | None) -> float | None:
+    if positive_similarity is not None and negative_similarity is not None:
+        return _clamp(0.5 + 0.5 * (positive_similarity - negative_similarity))
+    if positive_similarity is not None:
+        return _clamp(positive_similarity)
+    if negative_similarity is not None:
+        return _clamp(1.0 - negative_similarity)
+    return None
+
+
+def personal_semantic_similarity(
+    declared_similarity: float,
+    positive_similarity: float | None,
+    negative_similarity: float | None,
+    learned_alpha: float,
+) -> float:
+    learned = learned_similarity(positive_similarity, negative_similarity)
+    if learned is None or learned_alpha <= 0:
+        return _clamp(declared_similarity)
+    alpha = _clamp(learned_alpha)
+    return _clamp((1.0 - alpha) * declared_similarity + alpha * learned)
+
+
 def _tokens(text: str) -> set[str]:
     return {token for token in TOKEN_RE.findall(text.casefold()) if token not in STOPWORDS}
 
@@ -128,11 +152,11 @@ class RankingRepository:
             raise ValueError(f"No Neurofeed profile for user {user_id}")
         return row
 
-    def declared_embedding(self, user_id: str) -> str:
+    def embeddings(self, user_id: str) -> dict[str, Any]:
         row = self.api.select_one("user_embeddings", "user_id", user_id)
         if not row or not row.get("declared_embedding"):
-            raise ValueError("User declared embedding is missing; run embed_new_papers first")
-        return row["declared_embedding"]
+            raise ValueError("User declared embedding is missing; run neurofeed-embed first")
+        return row
 
     def semantic_candidates(self, vector: str, published_after: str, limit: int) -> list[dict[str, Any]]:
         return self.api.rpc("match_papers", {"p_query_embedding": vector, "p_published_after": published_after, "p_match_count": limit}) or []
@@ -168,44 +192,90 @@ class RankingRepository:
         return output
 
 
-def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", repository: RankingRepository | None = None, today: date | None = None) -> list[RankedPaper]:
+def _score_missing(repo: RankingRepository, paper_ids: list[str], vector: str | None, existing: dict[str, float]) -> None:
+    if not vector:
+        return
+    missing = [paper_id for paper_id in paper_ids if paper_id not in existing]
+    for row in repo.semantic_scores(missing, vector):
+        existing[row["paper_id"]] = _clamp(row.get("similarity", 0.0))
+
+
+def rank_for_user(
+    user_id: str,
+    *,
+    config_path: str = "config/ranking.yaml",
+    feedback_config_path: str = "config/feedback.yaml",
+    repository: RankingRepository | None = None,
+    today: date | None = None,
+) -> list[RankedPaper]:
     config = load_config(config_path)
+    feedback_config = load_config(feedback_config_path)
     ranking_cfg = config.get("ranking", {})
     feature_cfg = config.get("features", {})
+    learning_cfg = feedback_config.get("learning", {})
     repo = repository or RankingRepository()
     today = today or date.today()
+
     profile = repo.profile(user_id)
     profile_text = profile.get("research_description") or ""
-    vector = repo.declared_embedding(user_id)
+    embedding_state = repo.embeddings(user_id)
+    declared_vector = embedding_state["declared_embedding"]
+    positive_vector = embedding_state.get("learned_positive_embedding")
+    negative_vector = embedding_state.get("learned_negative_embedding")
+    feedback_count = int(embedding_state.get("feedback_count") or 0)
+    learned_alpha = learned_weight(
+        feedback_count,
+        maximum=float(learning_cfg.get("learned_weight_max", 0.35)),
+        start_after=int(learning_cfg.get("start_after_effective_papers", 2)),
+        full_after=int(learning_cfg.get("full_weight_after_effective_papers", 10)),
+    )
+
     lookback_days = int(ranking_cfg.get("lookback_days", 21))
     published_after = date.fromordinal(today.toordinal() - lookback_days).isoformat()
     priority_venues = [venue.casefold() for venue in ranking_cfg.get("priority_venues", [])]
+    semantic_limit = int(ranking_cfg.get("semantic_candidates", 400))
 
-    semantic_rows = repo.semantic_candidates(vector, published_after, int(ranking_cfg.get("semantic_candidates", 400)))
+    declared_rows = repo.semantic_candidates(declared_vector, published_after, semantic_limit)
+    learned_rows = repo.semantic_candidates(positive_vector, published_after, semantic_limit) if positive_vector and learned_alpha > 0 else []
     network_rows = repo.network_candidates(user_id, published_after)
     broad_rows = repo.broad_candidates(published_after, priority_venues, int(ranking_cfg.get("broad_candidates", 200)))
     seen = repo.seen_papers(user_id)
 
-    semantic_candidate_ids = {row["paper_id"] for row in semantic_rows}
-    semantic = {row["paper_id"]: _clamp(row.get("similarity", 0.0)) for row in semantic_rows}
+    declared_candidate_ids = {row["paper_id"] for row in declared_rows}
+    learned_candidate_ids = {row["paper_id"] for row in learned_rows}
+    declared_scores = {row["paper_id"]: _clamp(row.get("similarity", 0.0)) for row in declared_rows}
+    positive_scores = {row["paper_id"]: _clamp(row.get("similarity", 0.0)) for row in learned_rows}
+    negative_scores: dict[str, float] = {}
     network = {row["paper_id"]: row for row in network_rows}
     broad = {row["paper_id"]: row for row in broad_rows}
-    union_ids = list(dict.fromkeys([*semantic, *network, *broad]))
+
+    union_ids = list(dict.fromkeys([*declared_scores, *positive_scores, *network, *broad]))
     union_ids = [paper_id for paper_id in union_ids if paper_id not in seen]
 
-    missing_semantic = [paper_id for paper_id in union_ids if paper_id not in semantic]
-    for row in repo.semantic_scores(missing_semantic, vector):
-        semantic[row["paper_id"]] = _clamp(row.get("similarity", 0.0))
+    _score_missing(repo, union_ids, declared_vector, declared_scores)
+    if learned_alpha > 0:
+        _score_missing(repo, union_ids, positive_vector, positive_scores)
+        _score_missing(repo, union_ids, negative_vector, negative_scores)
 
     papers = repo.papers(union_ids)
     weights = ranking_cfg.get("weights", {})
     priority_set = set(priority_venues)
     ranked: list[RankedPaper] = []
+
     for paper_id in union_ids:
         paper = papers.get(paper_id)
         if not paper:
             continue
-        semantic_score = semantic.get(paper_id, 0.0)
+        declared_similarity = declared_scores.get(paper_id, 0.0)
+        positive_similarity = positive_scores.get(paper_id) if positive_vector else None
+        negative_similarity = negative_scores.get(paper_id) if negative_vector else None
+        learned_semantic = learned_similarity(positive_similarity, negative_similarity)
+        semantic_score = personal_semantic_similarity(
+            declared_similarity,
+            positive_similarity,
+            negative_similarity,
+            learned_alpha,
+        )
         bluesky_score = bluesky_subscore(network.get(paper_id))
         fit_score = fit_subscore(profile_text, paper, feature_config=feature_cfg)
         quality_score = quality_subscore(paper, priority_venues=priority_set)
@@ -238,7 +308,14 @@ def rank_for_user(user_id: str, *, config_path: str = "config/ranking.yaml", rep
             recency_score=recency_score,
             lane=lane,
             provenance={
-                "semantic_candidate": paper_id in semantic_candidate_ids,
+                "declared_semantic_candidate": paper_id in declared_candidate_ids,
+                "learned_semantic_candidate": paper_id in learned_candidate_ids,
+                "declared_similarity": declared_similarity,
+                "learned_similarity": learned_semantic,
+                "positive_similarity": positive_similarity,
+                "negative_similarity": negative_similarity,
+                "learned_weight": learned_alpha,
+                "effective_feedback_count": feedback_count,
                 "network": network.get(paper_id),
                 "broad_candidate": bool(broad_row),
             },
