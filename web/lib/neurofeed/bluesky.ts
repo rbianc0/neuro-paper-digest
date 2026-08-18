@@ -13,7 +13,7 @@ type BskyProfile = {
   labels?: unknown[];
 };
 
-async function bsky<T>(method: string, params: Record<string, string | number>) {
+export async function bsky<T>(method: string, params: Record<string, string | number>) {
   const url = new URL(`${PUBLIC_API}/${method}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
   const response = await fetch(url, { headers: { "User-Agent": "Neurofeed/1.0" } });
