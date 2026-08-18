@@ -1,0 +1,16 @@
+digest:
+  version: v1
+  target_papers: 16
+  must_read_count: 3
+  network_threshold: 0.35
+  interaction_token_days: 45
+
+summary:
+  model: gpt-5.6
+  max_abstract_chars: 5000
+
+email:
+  subject_prefix: Neurofeed Weekly
+  # Actual sender and public URL are deployment settings:
+  # NEUROFEED_EMAIL_FROM="Neurofeed <digest@example.org>"
+  # NEUROFEED_PUBLIC_URL="https://neurofeed.example.org"
