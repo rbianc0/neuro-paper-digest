@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from neuro_digest.db import SupabaseDataAPI
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class BlueskyRepository:
@@ -43,7 +47,7 @@ class BlueskyRepository:
                 "avatar": profile.get("avatar"),
                 "labels": profile.get("labels") or [],
             },
-            "last_profile_fetched_at": datetime.utcnow().isoformat() + "Z",
+            "last_profile_fetched_at": _utc_now(),
         }
         self.api.upsert("bluesky_accounts", row, on_conflict="did")
 
@@ -67,7 +71,7 @@ class BlueskyRepository:
 
     def mark_account_fetch_success(self, did: str, *, handle: str | None = None) -> None:
         changes: dict[str, Any] = {
-            "last_feed_fetched_at": datetime.utcnow().isoformat() + "Z",
+            "last_feed_fetched_at": _utc_now(),
             "fetch_state": "OK",
             "error_count": 0,
             "next_fetch_after": None,
@@ -94,7 +98,13 @@ class BlueskyRepository:
     def persist_feed_event(self, event: dict[str, Any]) -> None:
         post = event["post"]
         author = post.get("author") or {}
+        if not author.get("did"):
+            raise ValueError("Bluesky post is missing author DID")
         self.upsert_account(author)
+
+        # A repost is an attention event by the followed actor, not a different
+        # type of the underlying original post. Keep those concepts separate.
+        post_type = "QUOTE" if event["signal_type"] == "QUOTE" else "POST"
         post_row = {
             "uri": post["uri"],
             "cid": post.get("cid"),
@@ -102,7 +112,7 @@ class BlueskyRepository:
             "text": post.get("text"),
             "created_at": post.get("created_at"),
             "indexed_at": post.get("indexed_at"),
-            "post_type": event["signal_type"],
+            "post_type": post_type,
             "referenced_uri": post.get("referenced_uri"),
             "extracted_urls": post.get("urls") or [],
             "raw_record": post.get("raw_record") or {},
@@ -161,7 +171,7 @@ class BlueskyRepository:
             json={
                 "resolved_paper_id": paper_id,
                 "resolution_status": "RESOLVED",
-                "last_attempted_at": datetime.utcnow().isoformat() + "Z",
+                "last_attempted_at": _utc_now(),
                 "last_error": None,
             },
             prefer="return=minimal",
@@ -174,7 +184,7 @@ class BlueskyRepository:
             params={"id": f"eq.{link_id}"},
             json={
                 "resolution_status": "ERROR" if error else "UNRESOLVED",
-                "last_attempted_at": datetime.utcnow().isoformat() + "Z",
+                "last_attempted_at": _utc_now(),
                 "last_error": error[:1000] if error else None,
             },
             prefer="return=minimal",
