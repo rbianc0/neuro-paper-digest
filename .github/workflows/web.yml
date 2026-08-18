@@ -10,6 +10,9 @@ on:
       - "web/**"
       - ".github/workflows/web.yml"
 
+permissions:
+  contents: write
+
 concurrency:
   group: neurofeed-web-${{ github.ref }}
   cancel-in-progress: true
@@ -25,11 +28,29 @@ jobs:
       NEXT_PUBLIC_SITE_URL: http://localhost:3000
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Refresh pinned lockfile on Phase 7 branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/neurofeed-phase7-current'
+        working-directory: web
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Commit refreshed lockfile when needed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/neurofeed-phase7-current'
+        run: |
+          git add web/package-lock.json
+          if git diff --cached --quiet; then
+            echo "package-lock.json already current"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "web: refresh lockfile for Next.js 16.3.1"
+            git push
+          fi
       - name: Install web dependencies
         working-directory: web
         run: npm ci
