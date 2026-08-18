@@ -1,138 +1,102 @@
 # Neurofeed
 
-Neurofeed is a personalized scientific-literature discovery service built around a researcher's existing Bluesky scientific network. The canonical MVP output is a finite weekly email newsletter; the web application is the stateful feedback and control layer.
+Neurofeed is a personalized neuroscience-paper discovery service. A researcher's existing Bluesky network improves paper discovery; discovered papers can surface scientists worth knowing, while Bluesky remains the sole explicit follow graph.
 
-The implementation source of truth is **Neurofeed MVP Product & Technical Specification v1**. Before the lab pilot, the repository optimizes for the target architecture rather than compatibility with the original prototype.
+The primary product is a finite curated email newsletter. The web app handles onboarding, settings, history, saved papers, and feedback.
 
-## Implemented foundation
-
-### Phase 1 — database foundation
-
-Supabase/PostgreSQL provides the canonical state, Auth integration points, pgvector, RLS, user feedback/digest state, shared Bluesky entities, and researcher-discovery entities. Migrations live under `supabase/migrations/`.
-
-### Phase 2 — global literature ingestion
-
-Literature acquisition is DB-first and shared across users:
+## Architecture
 
 ```text
-OpenAlex + bioRxiv
-       ↓
-deterministic deduplication
-       ↓
-Crossref / Europe PMC enrichment
-       ↓
-canonical identifiers + provenance
-       ↓
-Supabase papers / authors / sources
+Vercel / Next.js / TypeScript
+├── web UI + Supabase Auth
+├── literature ingestion
+├── Bluesky ingestion
+├── embeddings + ranking
+├── feedback learning
+├── newsletter generation + SMTP delivery
+└── Vercel Workflow orchestration
+             │
+             ▼
+       Supabase/Postgres
+       canonical state + pgvector
 ```
 
-DOI, OpenAlex ID, PMID, preprint DOI, published DOI, and explicit preprint→publication mappings resolve into canonical papers. Historical duplicates can be merged atomically with provenance and downstream references preserved.
+There is one application runtime. GitHub Actions is CI only.
 
-### Phase 3 — shared Bluesky ingestion
+## Product workflows
 
-Bluesky is split into independent jobs:
+### New user
 
 ```text
-user Bluesky handle
-       ↓
-complete public follow-graph sync
-       ↓
-user_bluesky_follows
-       ↓
-unique actively-followed DIDs
-       ↓
-fetch each stale account once globally
-       ↓
-post/repost/quote scholarly events
-       ↓
-resolve DOI / PMID / scholarly URLs
-       ↓
-paper_social_signals
+finish onboarding
+      ↓
+embed research profile
+      ↓
+mirror Bluesky follow graph
+      ↓
+collect a bounded first slice of scholarly network signals
+      ↓
+rank shared literature
+      ↓
+generate first Neurofeed
+      ↓
+send first email
 ```
 
-A repost is modeled as an attention event by the followed actor while the underlying post retains its original author. Partial/failed graph fetches never replace the last known complete graph. Bluesky remains the sole explicit researcher-follow graph.
+The workflow is durable and resumes at failed steps. A user does not run jobs manually.
 
-### Phase 4 — user model and transparent ranking v1
+### Shared literature
 
-Canonical papers and declared research profiles are embedded with a configurable embedding model. Current database vectors are 1536-dimensional and `config/ranking.yaml` defaults to `text-embedding-3-small`.
+Vercel Cron starts a durable literature workflow every night at 01:37 UTC. It reads an overlapping eight-day OpenAlex neuroscience/psychology window, upserts canonical papers, and embeds new or changed records. The database invalidates embeddings when title/abstract/journal text changes.
 
-Ranking keeps the MVP score decomposition explicit:
+### Shared Bluesky network
 
-- semantic relevance: 35%
-- Bluesky network signal: 30%
-- methods/species/profile fit: 10%
-- scientific quality: 10%
-- broad-discovery importance: 5%
-- novelty: 5%
-- recency: 5%
+A second nightly workflow refreshes stale unique followed DIDs once globally, extracts scholarly links from posts/reposts/quotes, and materializes paper social signals. Neurofeed mirrors user follows; it does not create its own follow graph.
 
-Bluesky authorship and discussion are separate signals. Social counts use saturation rather than linear popularity. Previously shown papers are suppressed, and broad discovery is selected as an explicit per-user lane rather than low-score leftovers.
+### Weekly newsletter
 
-`neurofeed-rank-user <user_id>` prints the full score decomposition without creating a digest.
+Every Monday at 06:15 UTC a durable workflow refreshes learned feedback, ranks unseen papers, freezes digest snapshots, generates constrained summaries with `gpt-5.6-luna`, and delivers generated issues through SMTP.
 
-### Phase 5 — feedback learning
+## Code
 
-Paper interactions are append-only events. SAVE/UNSAVE state is derived from event history, and effective positive/negative feedback feeds a conservative learned semantic preference vector. Declared interests remain the stable base representation while learned feedback ramps in as evidence accumulates.
+The application lives in `web/`.
 
-### Phase 6 — weekly newsletter generation and pilot delivery
+- `web/app/` — Next.js UI, auth callbacks, email actions, cron entrypoints
+- `web/lib/neurofeed/` — small domain functions for literature, Bluesky, ranking, feedback, and digests
+- `web/workflows/` — durable orchestration
+- `supabase/migrations/` — database schema, RLS, RPCs, pgvector indexes
 
-Weekly rankings are frozen into immutable digest snapshots before delivery. Each selected paper stores its score decomposition, generated summary, recommendation explanation, and action URLs. Newsletter summaries use `gpt-5.6-luna` with `xhigh` reasoning by default and are constrained to canonical metadata supplied by Neurofeed.
+The implementation deliberately favors direct functions and platform primitives over internal frameworks, service layers, or speculative abstractions.
 
-The pilot delivery layer is provider-neutral SMTP with Gmail defaults (`smtp.gmail.com:587` + STARTTLS). A dedicated Gmail account can therefore send the lab pilot without a custom domain. The sender records an IMPRESSION only after SMTP delivery succeeds.
-
-`neurofeed-generate-digests` prepares the frozen weekly newsletter snapshots. `neurofeed-send-digests` sends already-generated snapshots without reranking them.
-
-## Local backend setup
+## Local setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install '.[dev]'
-
-export OPENALEX_API_KEY='...'
-export OPENAI_API_KEY='...'
-export SUPABASE_URL='https://yajsdhpaobqtduazpkkd.supabase.co'
-export SUPABASE_SECRET_KEY='...'
-export CROSSREF_MAILTO='you@example.org'   # optional
-
-neurofeed-sync-literature --lookback-days 8
-neurofeed-embed
-pytest -q
+cd web
+cp .env.example .env.local
+npm install
+npm run dev
 ```
 
-`SUPABASE_SECRET_KEY` and SMTP credentials are backend-only and must never be exposed to a browser.
+Validation:
 
-## Configuration
+```bash
+npm audit --omit=dev --audit-level=high
+npm run typecheck
+npm run build
+```
 
-- `config/literature.yaml`: global scholarly acquisition only.
-- `config/ranking.yaml`: embedding model, transparent score weights, broad-discovery defaults, priority venues, and interpretable method/species aliases.
-- `config/feedback.yaml`: event weights and learned-preference ramp.
-- `config/newsletter.yaml`: digest structure, summary model, and presentation settings.
+`SUPABASE_SECRET_KEY`, OpenAI/OpenAlex keys, SMTP credentials, and `CRON_SECRET` are server-only and must never be exposed through `NEXT_PUBLIC_*` variables.
 
-User interests are stored in Supabase profiles, not committed into global configuration.
+## Scheduling
 
-## GitHub Actions
+Production schedules live in `web/vercel.json`:
 
-- `.github/workflows/collect.yml`: shared literature ingestion followed by embeddings.
-- `.github/workflows/bluesky.yml`: complete user follow sync → unique stale-account ingestion → social-paper resolution.
-- `.github/workflows/feedback.yml`: learned preference refresh.
-- `.github/workflows/newsletter.yml`: generate frozen weekly digests and deliver them through the configured SMTP account.
-- `.github/workflows/test.yml`: unit tests on pushes and pull requests.
+- nightly literature: `37 1 * * *`
+- nightly Bluesky: `17 2 * * *`
+- weekly newsletter: `15 6 * * 1`
 
-Required repository secrets for the active backend jobs:
+Vercel Cron uses UTC.
 
-- `OPENALEX_API_KEY`
-- `OPENAI_API_KEY`
-- `SUPABASE_SECRET_KEY`
-- `NEUROFEED_SMTP_PASSWORD` once newsletter delivery is enabled
+## Next product phase
 
-Repository variables used by newsletter delivery:
-
-- `NEUROFEED_SMTP_USERNAME`
-- `NEUROFEED_EMAIL_FROM`
-- `NEUROFEED_PUBLIC_URL` after the web app receives its Vercel URL
-- `CROSSREF_MAILTO` (optional)
-
-## Next canonical phase
-
-Phase 7 builds the lightweight web application for onboarding, preferences, saved papers, history, and safe confirmation of state-changing email actions. Phase 8 then adds the small “Scientists Worth Knowing” section without creating a competing researcher-follow graph.
+The next product feature is the small **Scientists Worth Knowing** section. It will identify high-confidence authors behind recommended literature and, where possible, resolve their Bluesky identity. Following remains an explicit action on Bluesky.
