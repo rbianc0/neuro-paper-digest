@@ -41,11 +41,19 @@ def _response_text(payload: dict[str, Any]) -> str:
 
 
 class OpenAISummarizer:
-    def __init__(self, api_key: str | None = None, *, model: str = "gpt-5.6", session: requests.Session | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        model: str = "gpt-5.6-luna",
+        reasoning_effort: str = "xhigh",
+        session: requests.Session | None = None,
+    ):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or ""
         if not self.api_key:
             raise RuntimeError("OPENAI_API_KEY is required for newsletter summaries")
         self.model = os.getenv("NEUROFEED_SUMMARY_MODEL", model)
+        self.reasoning_effort = os.getenv("NEUROFEED_SUMMARY_REASONING_EFFORT", reasoning_effort)
         self.s = session or requests.Session()
 
     def summarize(self, papers: list[dict[str, Any]], rankings: dict[str, dict[str, Any]], *, max_abstract_chars: int = 5000) -> dict[str, PaperNarrative]:
@@ -112,6 +120,7 @@ class OpenAISummarizer:
             },
             json={
                 "model": self.model,
+                "reasoning": {"effort": self.reasoning_effort},
                 "input": prompt,
                 "text": {
                     "format": {

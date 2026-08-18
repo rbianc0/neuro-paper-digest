@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neuro-paper-digest"
-version = "0.5.0"
-description = "Neurofeed literature, Bluesky network, transparent ranking, and feedback-learning backend"
+version = "0.6.0"
+description = "Neurofeed literature, Bluesky network, transparent ranking, feedback learning, and newsletter delivery backend"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.32,<3",
@@ -26,6 +26,8 @@ neurofeed-resolve-social = "neuro_digest.jobs.resolve_social_papers:main"
 neurofeed-embed = "neuro_digest.jobs.embed_new_papers:main"
 neurofeed-refresh-feedback = "neuro_digest.jobs.refresh_feedback_profiles:main"
 neurofeed-rank-user = "neuro_digest.jobs.rank_user:main"
+neurofeed-generate-digests = "neuro_digest.jobs.generate_weekly_digests:main"
+neurofeed-send-digests = "neuro_digest.jobs.send_weekly_digests:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
