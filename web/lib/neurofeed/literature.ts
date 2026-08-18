@@ -49,6 +49,19 @@ type OpenAlexWork = {
   abstract_inverted_index?: Record<string, number[]>;
 };
 
+type Author = {
+  name: string;
+  openalexId: string | null;
+  orcid: string | null;
+  position: number;
+  affiliations: Array<{
+    openalexId: string | null;
+    name: string | null;
+    countryCode: string | null;
+    type: string | null;
+  }>;
+};
+
 function abstractFromIndex(index: OpenAlexWork["abstract_inverted_index"]) {
   if (!index) return null;
   const words: Array<[number, string]> = [];
@@ -64,7 +77,7 @@ function pmidFromWork(work: OpenAlexWork) {
   return raw ? raw.replace(/\/+$/, "").split("/").pop() || null : null;
 }
 
-function authorsFromWork(work: OpenAlexWork) {
+function authorsFromWork(work: OpenAlexWork): Author[] {
   return (work.authorships || []).flatMap((authorship, position) => {
     const author = authorship.author;
     if (!author?.display_name) return [];
@@ -93,6 +106,7 @@ function paperFromWork(work: OpenAlexWork) {
     openalexId,
     sourceUrl: work.id || `https://openalex.org/${openalexId}`,
     sourceLandingUrl: work.primary_location?.landing_page_url || null,
+    authors: authorsFromWork(work),
     row: {
       openalex_id: openalexId,
       canonical_doi: doi,
@@ -104,10 +118,7 @@ function paperFromWork(work: OpenAlexWork) {
       first_online_date: publicationDate,
       pmid: pmidFromWork(work),
       cited_by_count: work.cited_by_count ?? 0,
-      metadata: {
-        openalex_type: work.type || null,
-        openalex_authors: authorsFromWork(work),
-      },
+      metadata: { openalex_type: work.type || null },
     },
   };
 }
@@ -140,9 +151,66 @@ async function openAlexPage(window: LiteratureWindow, cursor: string) {
   }>;
 }
 
+function authorIdentity(author: Author, paperId: string) {
+  if (author.openalexId) return `openalex:${author.openalexId}`;
+  if (author.orcid) return `orcid:${author.orcid}`;
+  return `paper:${paperId}:name:${normalizedTitle(author.name)}`;
+}
+
+async function persistAuthors(
+  works: Array<NonNullable<ReturnType<typeof paperFromWork>>>,
+  papersByOpenAlex: Map<string, { id: string; openalex_id: string }>,
+) {
+  const db = createSupabaseServiceClient();
+  const candidates = works.flatMap((work) => {
+    const paper = papersByOpenAlex.get(work.openalexId);
+    if (!paper) return [];
+    return work.authors.map((author) => ({ paperId: paper.id, author }));
+  });
+  if (!candidates.length) return;
+
+  const unique = new Map<string, {
+    identity_key: string;
+    canonical_name: string;
+    openalex_id: string | null;
+    orcid: string | null;
+    affiliation_metadata: { affiliations: Author["affiliations"] };
+  }>();
+  for (const { paperId, author } of candidates) {
+    const identityKey = authorIdentity(author, paperId);
+    if (!unique.has(identityKey)) {
+      unique.set(identityKey, {
+        identity_key: identityKey,
+        canonical_name: author.name,
+        openalex_id: author.openalexId,
+        orcid: author.orcid,
+        affiliation_metadata: { affiliations: author.affiliations },
+      });
+    }
+  }
+
+  const { data: persistedAuthors, error } = await db
+    .from("authors")
+    .upsert([...unique.values()], { onConflict: "identity_key" })
+    .select("id,identity_key");
+  if (error) throw error;
+
+  const ids = new Map((persistedAuthors || []).map((author) => [author.identity_key, author.id]));
+  const links = candidates.flatMap(({ paperId, author }) => {
+    const authorId = ids.get(authorIdentity(author, paperId));
+    return authorId ? [{ paper_id: paperId, author_id: authorId, author_position: author.position }] : [];
+  });
+  if (links.length) {
+    const { error: linkError } = await db.from("paper_authors").upsert(links, { onConflict: "paper_id,author_id" });
+    if (linkError) throw linkError;
+  }
+}
+
 export async function syncOpenAlexPage(window: LiteratureWindow, cursor = "*") {
   const page = await openAlexPage(window, cursor);
-  const works = (page.results || []).map(paperFromWork).filter((work): work is NonNullable<ReturnType<typeof paperFromWork>> => Boolean(work));
+  const works = (page.results || [])
+    .map(paperFromWork)
+    .filter((work): work is NonNullable<ReturnType<typeof paperFromWork>> => Boolean(work));
   if (!works.length) return { count: 0, nextCursor: null as string | null };
 
   const db = createSupabaseServiceClient();
@@ -181,6 +249,8 @@ export async function syncOpenAlexPage(window: LiteratureWindow, cursor = "*") {
       .upsert(identifiers, { onConflict: "identifier_type,identifier_value" });
     if (identifierError) throw identifierError;
   }
+
+  await persistAuthors(works, ids);
 
   return {
     count: works.length,
