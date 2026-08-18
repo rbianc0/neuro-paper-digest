@@ -1,22 +1,41 @@
-# Neurofeed web app
+# Neurofeed application
 
-Thin Next.js App Router control surface over the canonical Supabase state.
+The complete Neurofeed runtime lives here: Next.js UI, scientific discovery logic, newsletter generation, and Vercel Workflows.
 
 ## Routes
 
-- `/login` — Supabase magic-link sign-in.
-- `/onboarding` — Bluesky handle, research description, discovery balance, newsletter preference.
-- `/latest` — finite current digest with web feedback.
-- `/history` and `/history/[digestId]` — prior frozen digests.
-- `/saved` — current Save state derived from append-only events.
-- `/settings` — profile editing and Bluesky resync request.
-- `/recommendation/[digestId]/[paperId]` — frozen score/provenance explanation.
-- `/paper/[paperId]` — authenticated tracked paper redirect.
-- `/r/[token]` — email CLICK token consumption and redirect.
-- `/action/save/[token]`, `/action/more/[token]`, `/action/less/[token]` — non-mutating GET confirmation pages; only the explicit POST consumes Save/More/Less.
+- `/login` — Supabase magic-link sign-in
+- `/onboarding` — interests, discovery balance, newsletter preference, Bluesky handle; starts the first-digest workflow
+- `/latest` — current finite digest and feedback
+- `/history`, `/history/[digestId]` — frozen prior issues
+- `/saved` — saved papers derived from append-only events
+- `/settings` — profile settings and Bluesky refresh request
+- `/recommendation/[digestId]/[paperId]` — ranking provenance
+- `/paper/[paperId]` — authenticated tracked paper redirect
+- `/r/[token]` — email click redirect
+- `/action/save/[token]`, `/action/more/[token]`, `/action/less/[token]` — confirmation-first email actions
+- `/api/cron/*` — authenticated Vercel Cron entrypoints that start durable workflows
 
-The browser uses only the Supabase publishable key. `SUPABASE_SECRET_KEY` is imported only from server-only modules and is required for public signed email-action routes.
+## Runtime structure
 
-## Local environment
+- `lib/neurofeed/` — direct domain functions
+- `workflows/` — durable user/bootstrap, literature, Bluesky, and newsletter orchestration
+- `lib/supabase/` — browser/server/service Supabase clients
 
-Copy `.env.example` to `.env.local` and fill in the publishable/secret keys. In production, `NEXT_PUBLIC_SITE_URL` is the deployed Vercel origin. The backend GitHub variable `NEUROFEED_PUBLIC_URL` must point at that same origin so frozen newsletter interaction links resolve to this application.
+The browser receives only the Supabase publishable key. `SUPABASE_SECRET_KEY`, OpenAI/OpenAlex keys, SMTP credentials, and `CRON_SECRET` are server-only.
+
+## Local setup
+
+```bash
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Validation:
+
+```bash
+npm audit --omit=dev --audit-level=high
+npm run typecheck
+npm run build
+```
