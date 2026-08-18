@@ -1,0 +1,71 @@
+name: Web app
+
+on:
+  push:
+    branches:
+      - agent/neurofeed-phase7
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: neurofeed-web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://yajsdhpaobqtduazpkkd.supabase.co
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_build_placeholder
+      SUPABASE_SECRET_KEY: sb_secret_build_placeholder
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Generate pinned npm lockfile on the Phase 7 branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/neurofeed-phase7'
+        working-directory: web
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Commit generated lockfile when needed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/neurofeed-phase7'
+        run: |
+          git add web/package-lock.json
+          if git diff --cached --quiet; then
+            echo "package-lock.json already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "web: lock npm dependencies"
+          git push
+
+      - name: Require committed lockfile
+        run: test -f web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Type-check web app
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Build production web app
+        working-directory: web
+        run: npm run build
