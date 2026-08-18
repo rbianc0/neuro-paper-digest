@@ -91,13 +91,19 @@ class FeedbackRepository:
         ) or []
 
     def save_learning_state(self, state: LearningState) -> None:
-        payload: dict[str, Any] = {
-            "user_id": state.user_id,
-            "feedback_count": state.feedback_count,
-            "learned_positive_embedding": vector_literal(state.learned_positive_embedding) if state.learned_positive_embedding else None,
-            "learned_negative_embedding": vector_literal(state.learned_negative_embedding) if state.learned_negative_embedding else None,
-        }
-        self.api.upsert("user_embeddings", payload, on_conflict="user_id")
+        # The declared embedding is controlled only by the declared profile
+        # embedding job. Feedback refreshes must never replace or clear it.
+        self.api._request(
+            "PATCH",
+            "user_embeddings",
+            params={"user_id": f"eq.{state.user_id}"},
+            json={
+                "feedback_count": state.feedback_count,
+                "learned_positive_embedding": vector_literal(state.learned_positive_embedding) if state.learned_positive_embedding else None,
+                "learned_negative_embedding": vector_literal(state.learned_negative_embedding) if state.learned_negative_embedding else None,
+            },
+            prefer="return=minimal",
+        )
 
 
 def refresh_user_learning(user_id: str, *, config_path: str = "config/feedback.yaml", repository: FeedbackRepository | None = None) -> LearningState:
