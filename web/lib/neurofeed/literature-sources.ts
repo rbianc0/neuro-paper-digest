@@ -76,26 +76,40 @@ export async function syncBiorxivPage(window: LiteratureWindow, cursor = 0) {
     if (!preprintDoi || !item.title?.trim()) continue;
 
     let paperId = await canonicalPaperForDois(preprintDoi, publishedDoi);
-    const row = {
-      title: item.title.trim(),
-      title_key: normalizedTitle(item.title) || null,
-      abstract: item.abstract?.trim() || null,
-      publication_date: publishedDoi ? null : item.date?.slice(0, 10) || null,
-      first_online_date: item.date?.slice(0, 10) || null,
-      canonical_doi: publishedDoi || preprintDoi,
-      preprint_doi: preprintDoi,
-      published_doi: publishedDoi,
-      metadata: {
-        biorxiv_category: item.category || null,
-        biorxiv_version: item.version || null,
-      },
+    const biorxivMetadata = {
+      biorxiv_category: item.category || null,
+      biorxiv_version: item.version || null,
     };
 
     if (paperId) {
-      const { error } = await db.from("papers").update(row).eq("id", paperId);
+      const { data: existing, error: existingError } = await db
+        .from("papers")
+        .select("abstract,first_online_date,metadata")
+        .eq("id", paperId)
+        .single();
+      if (existingError) throw existingError;
+      const dates = [existing.first_online_date, item.date?.slice(0, 10)].filter(Boolean).sort();
+      const { error } = await db.from("papers").update({
+        canonical_doi: publishedDoi || preprintDoi,
+        preprint_doi: preprintDoi,
+        published_doi: publishedDoi,
+        abstract: existing.abstract || item.abstract?.trim() || null,
+        first_online_date: dates[0] || null,
+        metadata: { ...(existing.metadata || {}), ...biorxivMetadata },
+      }).eq("id", paperId);
       if (error) throw error;
     } else {
-      const { data, error } = await db.from("papers").insert(row).select("id").single();
+      const { data, error } = await db.from("papers").insert({
+        canonical_doi: publishedDoi || preprintDoi,
+        preprint_doi: preprintDoi,
+        published_doi: publishedDoi,
+        title: item.title.trim(),
+        title_key: normalizedTitle(item.title) || null,
+        abstract: item.abstract?.trim() || null,
+        publication_date: item.date?.slice(0, 10) || null,
+        first_online_date: item.date?.slice(0, 10) || null,
+        metadata: biorxivMetadata,
+      }).select("id").single();
       if (error) throw error;
       paperId = data.id;
     }
