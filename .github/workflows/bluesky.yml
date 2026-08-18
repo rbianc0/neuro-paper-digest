@@ -1,0 +1,50 @@
+name: Sync shared Neurofeed Bluesky network
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: Days of followed-account feeds to inspect
+        required: false
+        default: "8"
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neurofeed-shared-bluesky
+  cancel-in-progress: false
+
+jobs:
+  sync-bluesky:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: https://yajsdhpaobqtduazpkkd.supabase.co
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Neurofeed backend
+        run: pip install .
+
+      - name: Mirror user follow graphs
+        run: python -m neuro_digest.jobs.sync_user_follow_graphs
+
+      - name: Fetch stale unique followed accounts
+        run: |
+          DAYS="${{ github.event.inputs.lookback_days || '8' }}"
+          python -m neuro_digest.jobs.sync_bluesky_accounts \
+            --stale-hours 18 \
+            --lookback-days "$DAYS"
+
+      - name: Resolve social scholarly links
+        run: python -m neuro_digest.jobs.resolve_social_papers

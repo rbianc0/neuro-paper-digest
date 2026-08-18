@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
 PMID_RE = re.compile(r"(?:pubmed\.ncbi\.nlm\.nih\.gov/|/pubmed/)(\d+)", re.I)
 URL_RE = re.compile(r"https?://[^\s<>\]\[\)\(\"']+", re.I)
+ORCID_RE = re.compile(r"\d{4}-\d{4}-\d{4}-[\dX]{4}", re.I)
 
 
 def canonical_doi(value: str | None) -> str | None:
@@ -20,8 +21,21 @@ def canonical_doi(value: str | None) -> str | None:
     match = DOI_RE.search(value)
     if not match:
         return None
-    doi = match.group(0).rstrip(".,;:)]}\"").lower()
-    return doi
+    return match.group(0).rstrip(".,;:)]}\"").lower()
+
+
+def canonical_orcid(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = ORCID_RE.search(value)
+    return match.group(0).upper() if match else None
+
+
+def canonical_openalex_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.rstrip("/").split("/")[-1].strip()
+    return value.upper() if value else None
 
 
 def extract_dois(text: str | None) -> set[str]:
