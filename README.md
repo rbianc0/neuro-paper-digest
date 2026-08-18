@@ -68,7 +68,19 @@ Ranking keeps the MVP score decomposition explicit:
 
 Bluesky authorship and discussion are separate signals. Social counts use saturation rather than linear popularity. Previously shown papers are suppressed, and broad discovery is selected as an explicit per-user lane rather than low-score leftovers.
 
-`neurofeed-rank-user <user_id>` prints the full score decomposition without creating a digest. Digest persistence/presentation remains Phase 6.
+`neurofeed-rank-user <user_id>` prints the full score decomposition without creating a digest.
+
+### Phase 5 — feedback learning
+
+Paper interactions are append-only events. SAVE/UNSAVE state is derived from event history, and effective positive/negative feedback feeds a conservative learned semantic preference vector. Declared interests remain the stable base representation while learned feedback ramps in as evidence accumulates.
+
+### Phase 6 — weekly newsletter generation and pilot delivery
+
+Weekly rankings are frozen into immutable digest snapshots before delivery. Each selected paper stores its score decomposition, generated summary, recommendation explanation, and action URLs. Newsletter summaries use `gpt-5.6-luna` with `xhigh` reasoning by default and are constrained to canonical metadata supplied by Neurofeed.
+
+The pilot delivery layer is provider-neutral SMTP with Gmail defaults (`smtp.gmail.com:587` + STARTTLS). A dedicated Gmail account can therefore send the lab pilot without a custom domain. The sender records an IMPRESSION only after SMTP delivery succeeds.
+
+`neurofeed-generate-digests` prepares the frozen weekly newsletter snapshots. `neurofeed-send-digests` sends already-generated snapshots without reranking them.
 
 ## Local backend setup
 
@@ -88,12 +100,14 @@ neurofeed-embed
 pytest -q
 ```
 
-`SUPABASE_SECRET_KEY` is backend-only and must never be exposed to a browser.
+`SUPABASE_SECRET_KEY` and SMTP credentials are backend-only and must never be exposed to a browser.
 
 ## Configuration
 
 - `config/literature.yaml`: global scholarly acquisition only.
 - `config/ranking.yaml`: embedding model, transparent score weights, broad-discovery defaults, priority venues, and interpretable method/species aliases.
+- `config/feedback.yaml`: event weights and learned-preference ramp.
+- `config/newsletter.yaml`: digest structure, summary model, and presentation settings.
 
 User interests are stored in Supabase profiles, not committed into global configuration.
 
@@ -101,6 +115,8 @@ User interests are stored in Supabase profiles, not committed into global config
 
 - `.github/workflows/collect.yml`: shared literature ingestion followed by embeddings.
 - `.github/workflows/bluesky.yml`: complete user follow sync → unique stale-account ingestion → social-paper resolution.
+- `.github/workflows/feedback.yml`: learned preference refresh.
+- `.github/workflows/newsletter.yml`: generate frozen weekly digests and deliver them through the configured SMTP account.
 - `.github/workflows/test.yml`: unit tests on pushes and pull requests.
 
 Required repository secrets for the active backend jobs:
@@ -108,11 +124,15 @@ Required repository secrets for the active backend jobs:
 - `OPENALEX_API_KEY`
 - `OPENAI_API_KEY`
 - `SUPABASE_SECRET_KEY`
+- `NEUROFEED_SMTP_PASSWORD` once newsletter delivery is enabled
 
-Optional repository variable:
+Repository variables used by newsletter delivery:
 
-- `CROSSREF_MAILTO`
+- `NEUROFEED_SMTP_USERNAME`
+- `NEUROFEED_EMAIL_FROM`
+- `NEUROFEED_PUBLIC_URL` after the web app receives its Vercel URL
+- `CROSSREF_MAILTO` (optional)
 
 ## Next canonical phase
 
-Phase 5 adds feedback endpoints/state transitions and learned preference representation. Phase 6 then snapshots rankings into weekly digests, generates explanations/summaries, signs email actions, and sends the newsletter.
+Phase 7 builds the lightweight web application for onboarding, preferences, saved papers, history, and safe confirmation of state-changing email actions. Phase 8 then adds the small “Scientists Worth Knowing” section without creating a competing researcher-follow graph.
