@@ -17,10 +17,12 @@ class BlueskyRepository:
         self.api = api or SupabaseDataAPI()
 
     def list_profiles_for_sync(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        # Phase 3 depends only on Phase 3 schema. A later web layer may add
+        # user-request prioritization without becoming a prerequisite here.
         params = {
-            "select": "user_id,bluesky_handle,bluesky_did,last_bluesky_sync_at,bluesky_sync_requested_at",
+            "select": "user_id,bluesky_handle,bluesky_did,last_bluesky_sync_at",
             "bluesky_handle": "not.is.null",
-            "order": "bluesky_sync_requested_at.desc.nullslast,last_bluesky_sync_at.asc.nullsfirst",
+            "order": "last_bluesky_sync_at.asc.nullsfirst,user_id.asc",
             "limit": max(1, min(limit, 5000)),
         }
         return self.api._request("GET", "profiles", params=params) or []
