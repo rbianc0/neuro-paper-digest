@@ -18,6 +18,11 @@ type BiorxivPaper = {
   version?: string;
 };
 
+type CrossrefWork = {
+  abstract?: string;
+  "container-title"?: string[];
+};
+
 async function paperIdFor(identifierType: "DOI" | "PMID", value: string) {
   const db = createSupabaseServiceClient();
   const { data, error } = await db
@@ -59,7 +64,7 @@ export async function syncBiorxivPage(window: LiteratureWindow, cursor = 0) {
 
   const payload = await response.json() as {
     collection?: BiorxivPaper[];
-    messages?: Array<{ total?: number; count?: number }>;
+    messages?: Array<{ total?: number }>;
   };
   const papers = payload.collection || [];
   const db = createSupabaseServiceClient();
@@ -120,7 +125,7 @@ async function crossref(doi: string) {
   if (process.env.CROSSREF_MAILTO) url.searchParams.set("mailto", process.env.CROSSREF_MAILTO);
   const response = await fetch(url, { headers: { "User-Agent": "Neurofeed/1.0" } });
   if (!response.ok) return null;
-  const payload = await response.json() as { message?: { title?: string[]; abstract?: string; container-title?: string[] } };
+  const payload = await response.json() as { message?: CrossrefWork };
   return payload.message || null;
 }
 
