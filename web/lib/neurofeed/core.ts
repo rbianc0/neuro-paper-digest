@@ -69,17 +69,27 @@ export function vectorLiteral(values: number[]) {
 
 export function canonicalDoi(raw: string | null | undefined) {
   if (!raw) return null;
-  const value = raw
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\/(dx\.)?doi\.org\//, "")
-    .replace(/^doi:\s*/, "");
-  return value.startsWith("10.") ? value : null;
+  const decoded = decodeURIComponent(raw).trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, "").replace(/^doi:\s*/i, "");
+  const match = decoded.match(/10\.\d{4,9}\/[-._;()/:a-z0-9]+/i);
+  return match ? match[0].replace(/[.,;:)\]}"']+$/, "").toLowerCase() : null;
+}
+
+export function canonicalOpenAlexId(raw: string | null | undefined) {
+  if (!raw) return null;
+  const value = raw.replace(/\/+$/, "").split("/").pop()?.trim();
+  return value ? value.toUpperCase() : null;
+}
+
+export function canonicalOrcid(raw: string | null | undefined) {
+  if (!raw) return null;
+  const match = raw.match(/\d{4}-\d{4}-\d{4}-[\dX]{4}/i);
+  return match ? match[0].toUpperCase() : null;
 }
 
 export function normalizedTitle(raw: string | null | undefined) {
   return (raw || "")
     .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
