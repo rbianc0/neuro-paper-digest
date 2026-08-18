@@ -99,6 +99,7 @@ export async function syncBiorxivPage(window: LiteratureWindow, cursor = 0) {
       if (error) throw error;
       paperId = data.id;
     }
+    if (!paperId) throw new Error(`Failed to persist bioRxiv paper ${preprintDoi}`);
 
     await addIdentifier(paperId, "DOI", preprintDoi);
     if (publishedDoi) await addIdentifier(paperId, "DOI", publishedDoi);
