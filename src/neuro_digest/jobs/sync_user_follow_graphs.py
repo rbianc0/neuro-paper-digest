@@ -9,9 +9,31 @@ from neuro_digest.sources.bluesky_shared import get_follows, get_profile
 LOG = logging.getLogger(__name__)
 
 
+def _profiles_for_sync(repo: BlueskyRepository, *, limit: int) -> list[dict]:
+    """Prefer explicit web refresh requests without making Phase 3 depend on Phase 7."""
+    try:
+        rows = repo.api._request(
+            "GET",
+            "profiles",
+            params={
+                "select": "user_id,bluesky_handle,bluesky_did,last_bluesky_sync_at,bluesky_sync_requested_at",
+                "bluesky_handle": "not.is.null",
+                "order": "bluesky_sync_requested_at.desc.nullslast,last_bluesky_sync_at.asc.nullsfirst,user_id.asc",
+                "limit": max(1, min(limit, 5000)),
+            },
+        )
+        if rows is not None:
+            return rows
+    except Exception as exc:
+        # The fallback preserves compatibility if this Phase 7 column is not
+        # present in an older/local database.
+        LOG.debug("Requested-refresh prioritization unavailable: %s", exc)
+    return repo.list_profiles_for_sync(limit=limit)
+
+
 def sync_user_follow_graphs(*, limit: int = 500, repository: BlueskyRepository | None = None) -> tuple[int, int]:
     repo = repository or BlueskyRepository(); synced = 0; failed = 0
-    for profile in repo.list_profiles_for_sync(limit=limit):
+    for profile in _profiles_for_sync(repo, limit=limit):
         user_id = profile["user_id"]; handle = profile.get("bluesky_handle")
         if not handle:
             continue
