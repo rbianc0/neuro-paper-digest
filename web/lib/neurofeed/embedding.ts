@@ -3,7 +3,8 @@ import "server-only";
 import { createSupabaseServiceClient } from "@/lib/supabase/service";
 import { NEUROFEED, normalizeText, sha256, vectorLiteral } from "./core";
 
-async function embed(text: string) {
+export async function embedTexts(texts: string[]) {
+  if (!texts.length) return [];
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is required");
 
@@ -15,7 +16,7 @@ async function embed(text: string) {
     },
     body: JSON.stringify({
       model: NEUROFEED.embeddingModel,
-      input: text,
+      input: texts,
       dimensions: NEUROFEED.embeddingDimensions,
       encoding_format: "float",
     }),
@@ -25,12 +26,16 @@ async function embed(text: string) {
     throw new Error(`OpenAI embeddings failed (${response.status}): ${(await response.text()).slice(0, 400)}`);
   }
 
-  const body = await response.json() as { data?: Array<{ embedding?: number[] }> };
-  const vector = body.data?.[0]?.embedding;
-  if (!vector || vector.length !== NEUROFEED.embeddingDimensions) {
-    throw new Error("OpenAI returned an invalid embedding");
+  const body = await response.json() as { data?: Array<{ index: number; embedding?: number[] }> };
+  const rows = [...(body.data || [])].sort((a, b) => a.index - b.index);
+  const vectors = rows.map((row) => row.embedding);
+  if (
+    vectors.length !== texts.length ||
+    vectors.some((vector) => !vector || vector.length !== NEUROFEED.embeddingDimensions)
+  ) {
+    throw new Error("OpenAI returned invalid embeddings");
   }
-  return vector;
+  return vectors as number[][];
 }
 
 export async function embedUserProfile(userId: string) {
@@ -60,7 +65,7 @@ export async function embedUserProfile(userId: string) {
     return { changed: false };
   }
 
-  const vector = await embed(text);
+  const [vector] = await embedTexts([text]);
   const { error } = await db.from("user_embeddings").upsert({
     user_id: userId,
     declared_embedding: vectorLiteral(vector),
